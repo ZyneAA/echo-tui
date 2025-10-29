@@ -9,7 +9,7 @@ mod ui;
 async fn main() -> io::Result<()> {
     match ignite::engine() {
         Ok(val) => {
-            if let Err(e) = app::State::default().init(val).await {
+            if let Err(e) = app::start(val).await {
                 eprintln!("{}", e);
             }
         }

@@ -1,6 +1,4 @@
 use std::io::{self, stdout};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::{
     Frame,
@@ -10,32 +8,36 @@ use ratatui::{
     },
 };
 
+use crate::app;
 use crate::config::Config;
 
+pub mod canvas;
+pub mod components;
 pub mod event;
-pub mod widget;
 
 pub struct Canvas {
+    state: app::State,
     config: Config,
 }
 
 impl Canvas {
-    pub fn init(config: Config) -> Self {
-        Canvas { config }
+    pub fn init(state: app::State, config: Config) -> Self {
+        Canvas { state, config }
     }
 
-    pub async fn render(&mut self, exit: Arc<AtomicBool>) -> io::Result<()> {
+    pub async fn paint(&mut self) -> io::Result<()> {
         enable_raw_mode()?;
         execute!(stdout(), EnterAlternateScreen)?;
 
         let mut terminal = ratatui::init();
-        let exit = exit.load(Ordering::Relaxed);
-        while !exit {
+
+        while !self.state.exit {
             if let Err(e) = terminal.draw(|frame| self.draw(frame)) {
-                eprintln!("{e}");
+                eprintln!("{}", e);
             };
-            if event::handle_events().await.unwrap() == true {
-                break;
+
+            if let Err(e) = self.handle_events().await {
+                eprintln!("{}", e);
             };
         }
 

@@ -57,12 +57,9 @@ pub fn engine() -> Result<(Config, PathBuf), Box<dyn std::error::Error>> {
     let config_vals: config::Config = toml::from_str(&config)?;
     for (name, style) in &config_vals.colors {
         println!("Name: {}", name);
-        println!("  BG: {:?}", style.bg);
-        println!("  FG: {:?}", style.fg);
+        println!("  {:?}", style);
     }
 
     let ok = (config_vals, paths.data);
     Ok(ok)
 }
-
-
