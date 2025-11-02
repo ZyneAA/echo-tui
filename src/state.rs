@@ -1,16 +1,10 @@
-use std::io;
 use std::time::Duration;
 
 use ratatui::{
-    style::{Style, palette::tailwind},
+    style::{palette::tailwind, Style},
     text::Line,
 };
 use strum::{Display, EnumIter, FromRepr};
-
-// use super::audio::AudioPlayer;
-use super::ui;
-use crate::app;
-use crate::{config::Config, ignite::Paths};
 
 #[derive(Debug)]
 pub struct AnimationTimeStamp {
@@ -116,46 +110,5 @@ impl State {
 
     pub fn previous_tab(&mut self) {
         self.selected_tab = self.selected_tab.previous();
-    }
-}
-
-pub async fn start(data: (Config, Paths)) -> io::Result<()> {
-    let mut state = State::default();
-    state.set_animations(
-        data.0.animations["animations"].spinner.len(),
-        data.0.animations["animations"].hpulse.len(),
-        data.0.animations["animations"].dot,
-        data.0.animations["animations"].timestamp.clone(),
-        data.0.animations["animations"].timestamp_bar.clone(),
-    );
-
-    // Dummy timestamp
-    // state.player.timestamp = (Duration::from_millis(0), Duration::from_millis(300000));
-
-    // let test_song = data.1.songs.join("test.mp3");
-
-   // let mut audio_player = match AudioPlayer::new(test_song.to_str().unwrap()) {
-   //     Ok(player) => player,
-   //     Err(e) => {
-   //         eprintln!("Failed to create audio player: {}", e);
-   //         return Err(io::Error::new(io::ErrorKind::Other, "Failed to create audio player"));
-   //     }
-   // };
-
-   // if let Err(e) = audio_player.start() {
-   //     eprintln!("Failed to start audio player: {}", e);
-   //     return Err(io::Error::new(io::ErrorKind::Other, "Failed to start audio player"));
-   // }
-
-    let mut canvas = ui::EchoCanvas::init(state, data.0);
-
-    let ui = canvas.paint().await;
-
-    match ui {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            eprintln!("UI task failed: {}", e);
-            Err(io::Error::new(io::ErrorKind::Other, "UI task failed"))
-        }
     }
 }

@@ -36,10 +36,39 @@ pub struct Colors {
     pub border: Color,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct Animations {
+    #[serde(default = "default_spinner")]
+    pub spinner: Vec<char>,
+
+    #[serde(default = "default_hpulse")]
+    pub hpulse: Vec<String>,
+
+    #[serde(default = "default_dot")]
+    pub dot: usize,
+
+    #[serde(default = "default_timestamp")]
+    pub timestamp: String,
+
+    #[serde(default = "default_timestamp_bar")]
+    pub timestamp_bar: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(flatten)]
     pub colors: HashMap<String, Colors>,
+
+    #[serde(flatten)]
+    pub animations: HashMap<String, Animations>,
+}
+
+fn default_timestamp_bar() -> String {
+    String::from("▲")
+}
+
+fn default_timestamp() -> String {
+    String::from("☐")
 }
 
 fn default_bg() -> Color {
@@ -66,7 +95,19 @@ fn default_warning() -> Color {
     Color::Yellow
 }
 
-fn hex_to_color(hex: &str) -> Color {
+fn default_spinner() -> Vec<char> {
+    ['/', '-', '\\', '|'].into()
+}
+
+fn default_hpulse() -> Vec<String> {
+    ["| ⎟ ⎜".to_owned(), "⎜ | ⎜".to_owned(), "⎟ ⎢ |".to_owned()].into()
+}
+
+fn default_dot() -> usize {
+    3
+}
+
+pub fn hex_to_color(hex: &str) -> Color {
     let hex = hex.trim_start_matches('#');
 
     if hex.len() != 6 {
