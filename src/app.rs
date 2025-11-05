@@ -1,5 +1,5 @@
-use std::io;
-use std::time::Duration;
+use std::rc::Rc;
+use std::{cell::RefCell, io, time::Duration};
 
 use ratatui::{
     style::{Style, palette::tailwind},
@@ -7,9 +7,8 @@ use ratatui::{
 };
 use strum::{Display, EnumIter, FromRepr};
 
-// use super::audio::AudioPlayer;
+use super::awdio::AudioPlayer;
 use super::ui;
-use crate::app;
 use crate::{config::Config, ignite::Paths};
 
 #[derive(Debug)]
@@ -25,11 +24,11 @@ impl Default for AnimationTimeStamp {
 
 #[derive(Debug, Default)]
 pub struct AnimationState {
-    pub timestamp: (Duration, Duration),
+    pub timestamp: (u64, u64),
     pub timestamp_location: usize,
 
     // animations
-    pub animation_timestamp: AnimationTimeStamp,
+    pub animation_timestamp: Rc<RefCell<AnimationTimeStamp>>,
     pub animation_spinner: (usize, usize),
     pub animation_hpulse: (usize, usize),
     pub animation_dot: (usize, usize),
@@ -81,6 +80,7 @@ pub struct State {
     pub selected_tab: SelectedTab,
     pub input: String,
     pub animations: AnimationState,
+    pub uptime: Duration,
 }
 
 impl State {
@@ -96,10 +96,16 @@ impl State {
         self.animations.animation_hpulse.1 = hpulse;
         self.animations.animation_dot.1 = dot;
 
-        for i in self.animations.animation_timestamp.vals.iter_mut() {
+        for i in self
+            .animations
+            .animation_timestamp
+            .borrow_mut()
+            .vals
+            .iter_mut()
+        {
             *i = timestamp_bar.clone();
         }
-        self.animations.animation_timestamp.vals[0] = timestamp;
+        self.animations.animation_timestamp.borrow_mut().vals[0] = timestamp;
     }
 
     pub fn append_input(&mut self, input: &str) {
@@ -129,25 +135,30 @@ pub async fn start(data: (Config, Paths)) -> io::Result<()> {
         data.0.animations["animations"].timestamp_bar.clone(),
     );
 
-    // Dummy timestamp
-    // state.player.timestamp = (Duration::from_millis(0), Duration::from_millis(300000));
+    let test_song = data.1.songs.join("test4.mp3");
 
-    // let test_song = data.1.songs.join("test.mp3");
+    let mut audio_player = match AudioPlayer::new(test_song.to_str().unwrap()) {
+        Ok(player) => player,
+        Err(e) => {
+            eprintln!("Failed to create audio player: {}", e);
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Failed to create audio player",
+            ));
+        }
+    };
 
-   // let mut audio_player = match AudioPlayer::new(test_song.to_str().unwrap()) {
-   //     Ok(player) => player,
-   //     Err(e) => {
-   //         eprintln!("Failed to create audio player: {}", e);
-   //         return Err(io::Error::new(io::ErrorKind::Other, "Failed to create audio player"));
-   //     }
-   // };
+    if let Err(e) = audio_player.play() {
+        eprintln!("Failed to start audio player: {}", e);
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Failed to start audio player",
+        ));
+    }
 
-   // if let Err(e) = audio_player.start() {
-   //     eprintln!("Failed to start audio player: {}", e);
-   //     return Err(io::Error::new(io::ErrorKind::Other, "Failed to start audio player"));
-   // }
+    let audio_state = audio_player.state.clone();
 
-    let mut canvas = ui::EchoCanvas::init(state, data.0);
+    let mut canvas = ui::EchoCanvas::init(state, data.0, audio_state);
 
     let ui = canvas.paint().await;
 

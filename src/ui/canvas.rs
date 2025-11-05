@@ -14,6 +14,7 @@ use crate::app::SelectedTab;
 
 use super::EchoCanvas;
 use super::components;
+use crate::awdio::current_timestamp;
 
 impl Widget for &EchoCanvas {
     fn render(self, area: Rect, buf: &mut Buffer) {
@@ -40,6 +41,42 @@ impl Widget for &EchoCanvas {
             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
             .split(tab_area);
 
+        let (
+            samples,
+            sample_rate,
+            channels,
+            file_size,
+            duration,
+            is_seeking,
+            is_finished,
+            is_pause,
+            volume,
+            total_samples_played,
+            min_buffer_threshold,
+            fft,
+        ) = {
+            let audio = self.audio_state.lock().unwrap();
+            (
+                audio.samples.len(),
+                audio.sample_rate,
+                audio.channels,
+                audio.file_size.clone(),
+                audio.duration.clone(),
+                audio.is_seeking,
+                audio.is_finished,
+                audio.is_pause,
+                audio.volume,
+                audio.total_samples_played,
+                audio.min_buffer_threshold,
+                audio.fft_state.clone(),
+            )
+        };
+
+        let max_samples = (duration.seconds * sample_rate as u64) as i64;
+        let timestamp = current_timestamp(total_samples_played, sample_rate, channels);
+        let timestamp_percent = ((timestamp.1 / duration.seconds as f64) * 100.0).min(100.0);
+        let position = (((timestamp_percent / 100.0) * 50.0) as usize).min(49);
+
         // Rendering starts here
         let text = vec![
             "Title: This is the day".into(),
@@ -48,9 +85,11 @@ impl Widget for &EchoCanvas {
         ];
 
         let is_playing_status = format!(
-            "status: playing {} {}",
+            " PLAYING: {} {} {} - ●  {}",
+            max_samples,
+            is_finished,
             self.config.animations["animations"].hpulse[self.state.animations.animation_hpulse.0],
-            self.state.animations.animation_timestamp.vals.len()
+            position
         );
         let title_block = components::bordered_block(
             Line::from(vec![Span::raw(is_playing_status)]),
@@ -58,8 +97,8 @@ impl Widget for &EchoCanvas {
         )
         .title(Line::from(" | ").right_aligned())
         .padding(Padding::horizontal(1))
-        .title_bottom("size: 12.3mb")
-        .title_bottom(Line::from("length: 12:49").right_aligned())
+        .title_bottom(Line::from(format!(" SIZE: {} ", file_size)))
+        .title_bottom(Line::from(format!(" CLK: {} ", duration.readable)).right_aligned())
         .title_style(Style::new().fg(self.config.colors["colors"].title));
 
         components::paragraph(text, title_block)
@@ -69,22 +108,35 @@ impl Widget for &EchoCanvas {
         let timestamp_block =
             components::bordered_block(Line::default(), self.config.colors["colors"].border)
                 .title_style(Style::new().fg(self.config.colors["colors"].title))
-                .title(Line::from("uptime: 21290ms").right_aligned())
+                .title(Line::from(format!(" UPTIME: {:?} ", self.state.uptime)).right_aligned())
                 .title(Line::from(" ⟐  ").left_aligned())
                 .title(Line::from("12:21:43").centered())
-                .title_bottom(Line::from("volume: 30"))
+                .title_bottom(Line::from(format!(" VOL: {:.1} ", volume)))
                 .title_bottom(Line::from("using: macbook's speaker").centered())
-                .title_bottom(Line::from("tick rate: 100ms").right_aligned());
-        let timestamp_bar: String = self.state.animations.animation_timestamp.vals.join("");
-        let total_length = self.state.animations.timestamp.1.as_millis();
-        let current_timestamp = self.state.animations.timestamp.0.as_millis();
-        let timestamp = format!("{}⧏ |⧐ {}", current_timestamp, total_length);
+                .title_bottom(Line::from(" TICK: 100ms ").right_aligned());
 
-        let temp = self.state.animations.timestamp_location;
-        let temp = make_gradient_bar(temp);
+        let mut anim = self.state.animations.animation_timestamp.borrow_mut();
+        for i in 0..=position {
+            anim.vals[i] = self.config.animations["animations"].timestamp_bar.clone();
+        }
+        drop(anim);
+        self.state.animations.animation_timestamp.borrow_mut().vals[position] =
+            self.config.animations["animations"].timestamp.clone();
+
+        let timestamp_bar: String = self
+            .state
+            .animations
+            .animation_timestamp
+            .borrow_mut()
+            .vals
+            .join("");
+        let timestamp = format!(
+            "{} ■ {} :|{:.2}%|: {} ■ {}",
+            timestamp.1 as u64, timestamp.0, timestamp_percent, duration.readable, duration.seconds
+        );
 
         components::paragraph(
-            vec![Line::from(timestamp_bar), Line::from(timestamp), temp],
+            vec![Line::from(timestamp_bar), Line::from(timestamp)],
             timestamp_block,
         )
         .style(Style::default().fg(self.config.colors["colors"].fg))
@@ -110,32 +162,23 @@ impl Widget for &EchoCanvas {
         )
         .render(tab_area[0], buf);
 
-        self.state.selected_tab.render_tabs(
-            body_area,
-            buf,
-            self.fft_fake.clone(),
-            self.config.colors["colors"].info,
-            self.config.colors["colors"].title,
-            self.config.colors["colors"].border,
-        );
-    }
-}
-
-impl SelectedTab {
-    pub fn render_tabs(
-        self,
-        area: Rect,
-        buf: &mut Buffer,
-        fft_fake: Vec<(String, u64)>,
-        low: Color,
-        medium: Color,
-        high: Color,
-    ) {
-        match self {
-            Self::Echo => render_echo(area, buf, fft_fake, low, medium, high),
-            Self::Playlist => render_playlist(area, buf),
-            Self::Download => render_playlist(area, buf),
-            Self::Misc => render_playlist(area, buf),
+        match self.state.selected_tab {
+            SelectedTab::Echo => render_echo(
+                body_area,
+                buf,
+                samples,
+                sample_rate,
+                channels,
+                total_samples_played,
+                min_buffer_threshold,
+                fft,
+                self.config.colors["colors"].fg,
+                self.config.colors["colors"].title,
+                self.config.colors["colors"].border,
+            ),
+            SelectedTab::Playlist => render_playlist(body_area, buf),
+            SelectedTab::Download => render_playlist(body_area, buf),
+            SelectedTab::Misc => render_playlist(body_area, buf),
         }
     }
 }
@@ -143,9 +186,14 @@ impl SelectedTab {
 fn render_echo(
     area: Rect,
     buf: &mut Buffer,
-    fft_fake: Vec<(String, u64)>,
+    sample_buffer_size: usize,
+    sample_rate: u32,
+    channels: u16,
+    total_sample_played: u64,
+    min_buffer_threshold: usize,
+    fft_state: Vec<f32>,
     low_color: Color,
-    medium_color: Color,
+    mid_color: Color,
     high_color: Color,
 ) {
     let chunks = Layout::default()
@@ -155,94 +203,82 @@ fn render_echo(
     let ttf_area = chunks[0];
     let body_area = chunks[1];
 
-    ///// CHNAGE HERE LATER /////
     let title_ttf = Line::from(" ▪︎ ");
-    let ttf_block = components::bordered_block(title_ttf, low_color);
-    let fft_fake: &Vec<(String, u64)> = &fft_fake;
-    let fft_data: Vec<(&str, u64)> = fft_fake
-        .iter()
-        .map(|(label, value)| (label.as_str(), *value))
-        .collect();
+    let ttf_block = components::bordered_block(title_ttf, low_color)
+        .border_style(Style::new().fg(high_color))
+        .title_style(Style::new().fg(mid_color));
+    let fft_data: Vec<f64> = fft_state.iter().map(|value| *value as f64).collect();
 
     let inner_area = ttf_block.inner(ttf_area);
     let width = inner_area.width as f64;
     let height = (inner_area.height as f64) + 50.0;
 
-    let mut level_1 = Vec::new();
-    let mut level_2 = Vec::new();
-    let mut level_3 = Vec::new();
-    let mut level_4 = Vec::new();
-    let mut level_5 = Vec::new();
-
-    let mut counter = 0.0;
     let middle = height / 2.0;
 
     let gradient_start = hex_to_rgb(&low_color.to_string()).unwrap_or((0, 0, 0));
+    let gradient_mid = hex_to_rgb(&mid_color.to_string()).unwrap_or((0, 0, 0));
     let gradient_stop = hex_to_rgb(&high_color.to_string()).unwrap_or((255, 255, 255));
-    let gradient = gradient_steps(gradient_start, gradient_stop, 5);
 
-    for (_, i) in fft_data {
-        for j in 0..i {
+    let gradient = gradient_steps(gradient_start, gradient_mid, gradient_stop, 32);
+
+    let mut all_points = vec![];
+
+    for (i_idx, i) in fft_data.iter().enumerate() {
+        for j in 0..(*i as usize) {
             let upper = j as f64 + middle;
             let height_percent = upper / height;
-            if height_percent > 0.4 && height_percent < 0.45 {
-                level_2.push((counter, j as f64 + middle));
-                level_2.push((counter, height - middle - j as f64));
-            } else if height_percent > 0.45 && height_percent < 0.55 {
-                level_3.push((counter, j as f64 + middle));
-                level_3.push((counter, height - middle - j as f64));
-            } else if height_percent > 0.56 && height_percent <= 0.8 {
-                level_4.push((counter, j as f64 + middle));
-                level_4.push((counter, height - middle - j as f64));
-            } else if height_percent > 0.81 {
-                level_5.push((counter, j as f64 + middle));
-                level_5.push((counter, height - middle - j as f64));
-            } else {
-                level_1.push((counter, j as f64 + middle));
-                level_1.push((counter, height - middle - j as f64));
-            }
+
+            let level_idx = (height_percent.clamp(0.0, 1.0) * (gradient.len() - 1) as f64) as usize;
+
+            all_points.push(((i_idx as f64), upper, gradient[level_idx]));
+            all_points.push((
+                (i_idx as f64),
+                height - middle - j as f64,
+                gradient[level_idx],
+            ));
         }
-        counter += 1.0;
     }
 
-    let temp = format!(
-        " {} {} {} {:?} ",
-        width,
-        height,
-        low_color.to_string(),
-        gradient_stop
-    );
-    let title = Title::from(temp);
     Canvas::default()
-        .block(ttf_block.title(title))
+        .block(
+            ttf_block
+                .title_bottom(Line::from(format!(
+                    " ○ ○ TOTAL_SAMPLES_CONSUMED: {} ",
+                    total_sample_played
+                )))
+                .title_bottom(
+                    Line::from(format!(
+                        " • • MIN_BUF_THRESHOLD: {} ⋯ ",
+                        min_buffer_threshold
+                    ))
+                    .right_aligned(),
+                )
+                .title(Title::from(format!(
+                    " ■ SAMPLE_BUF: {} // SAMPLE_RATE: {} // BUS: {}X ",
+                    sample_buffer_size, sample_rate, channels
+                ))),
+        )
         .x_bounds([0.0, width])
-        .y_bounds([0.0, height])
+        .y_bounds([-50.0, height + 50.0])
         .paint(|ctx| {
             ctx.layer();
-            ctx.draw(&Points {
-                coords: &level_1,
-                color: Color::Rgb(gradient[0].0, gradient[0].1, gradient[0].2),
-            });
-            ctx.draw(&Points {
-                coords: &level_2,
-                color: Color::Rgb(gradient[1].0, gradient[1].1, gradient[1].2),
-            });
-            ctx.draw(&Points {
-                coords: &level_3,
-                color: Color::Rgb(gradient[2].0, gradient[2].1, gradient[2].2),
-            });
-            ctx.draw(&Points {
-                coords: &level_4,
-                color: Color::Rgb(gradient[3].0, gradient[3].1, gradient[3].2),
-            });
-            ctx.draw(&Points {
-                coords: &level_5,
-                color: Color::Rgb(gradient[4].0, gradient[4].1, gradient[4].2),
-            });
+
+            for (x, y, color) in all_points.iter() {
+                let (r, g, b) = color.clone();
+                let main_color = Color::Rgb(r, g, b);
+                let fade_color = Color::Rgb(r / 2, g / 2, b / 2);
+
+                ctx.draw(&Points {
+                    coords: &[(*x, *y)],
+                    color: main_color,
+                });
+                ctx.draw(&Points {
+                    coords: &[(x + 0.5, y + 0.5)],
+                    color: fade_color,
+                });
+            }
         })
         .render(ttf_area, buf);
-    //////////////////////////////
-
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
@@ -292,32 +328,6 @@ fn render_playlist(area: Rect, buf: &mut Buffer) {
     components::bordered_block(title_metadata, ratatui::style::Color::Red).render(right_area, buf);
 }
 
-fn make_gradient_bar(progress: usize) -> Line<'static> {
-    let length = 50;
-    let filled = length as usize * progress;
-
-    // start and end colors (teal → magenta)
-    let start = (0, 255, 200);
-    let end = (255, 0, 150);
-
-    let mut spans = Vec::new();
-    for i in 0..length {
-        // linear interpolation between start and end
-        let t = i as f32 / (length - 1) as f32;
-        let r = (start.0 as f32 + (end.0 as f32 - start.0 as f32) * t) as u8;
-        let g = (start.1 as f32 + (end.1 as f32 - start.1 as f32) * t) as u8;
-        let b = (start.2 as f32 + (end.2 as f32 - start.2 as f32) * t) as u8;
-
-        let symbol = if i < filled { "+" } else { "·" }; // dot for unfilled part
-        spans.push(Span::styled(
-            symbol,
-            Style::default().fg(Color::Rgb(r, g, b)),
-        ));
-    }
-
-    Line::from(spans)
-}
-
 fn hex_to_rgb(hex: &str) -> Option<(usize, usize, usize)> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
 
@@ -334,15 +344,28 @@ fn hex_to_rgb(hex: &str) -> Option<(usize, usize, usize)> {
 
 fn gradient_steps(
     start: (usize, usize, usize),
+    mid: (usize, usize, usize),
     end: (usize, usize, usize),
     steps: usize,
 ) -> Vec<(u8, u8, u8)> {
     let mut result = Vec::new();
-    for i in 0..steps {
-        let t = i as f64 / (steps - 1) as f64; // fraction 0.0 → 1.0
-        let r = start.0 as f64 + (end.0 as f64 - start.0 as f64) * t;
-        let g = start.1 as f64 + (end.1 as f64 - start.1 as f64) * t;
-        let b = start.2 as f64 + (end.2 as f64 - start.2 as f64) * t;
+    let half = steps / 2;
+
+    // first half: start → mid
+    for i in 0..half {
+        let t = i as f64 / (half - 1) as f64;
+        let r = start.0 as f64 + (mid.0 as f64 - start.0 as f64) * t / 2.0;
+        let g = start.1 as f64 + (mid.1 as f64 - start.1 as f64) * t / 2.0;
+        let b = start.2 as f64 + (mid.2 as f64 - start.2 as f64) * t / 2.0;
+        result.push((r as u8, g as u8, b as u8));
+    }
+
+    // second half: mid → end
+    for i in 0..(steps - half) {
+        let t = i as f64 / (steps - half - 1) as f64;
+        let r = mid.0 as f64 + (end.0 as f64 - mid.0 as f64) * t / 2.0;
+        let g = mid.1 as f64 + (end.1 as f64 - mid.1 as f64) * t / 2.0;
+        let b = mid.2 as f64 + (end.2 as f64 - mid.2 as f64) * t / 2.0;
         result.push((r as u8, g as u8, b as u8));
     }
 

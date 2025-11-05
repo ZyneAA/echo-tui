@@ -1,10 +1,10 @@
 use std::io;
 
 mod app;
-// mod audio;
 mod config;
 mod ignite;
 mod ui;
+mod awdio;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {

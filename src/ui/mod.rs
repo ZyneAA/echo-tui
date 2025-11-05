@@ -1,4 +1,7 @@
-use std::io::{self, stdout};
+use std::{
+    io::{self, stdout},
+    sync::{Arc, Mutex},
+};
 
 use ratatui::{
     Frame,
@@ -14,7 +17,7 @@ use tokio::{
 };
 
 use crate::config::Config;
-use crate::app::State;
+use crate::{app::State, awdio::AudioData};
 
 pub mod canvas;
 pub mod components;
@@ -23,15 +26,15 @@ pub mod event;
 pub struct EchoCanvas {
     state: State,
     config: Config,
-    fft_fake: Vec<(String, u64)>,
+    audio_state: Arc<Mutex<AudioData>>,
 }
 
 impl EchoCanvas {
-    pub fn init(state: State, config: Config) -> Self {
+    pub fn init(state: State, config: Config, audio_state: Arc<Mutex<AudioData>>) -> Self {
         EchoCanvas {
             state,
             config,
-            fft_fake: vec![],
+            audio_state,
         }
     }
 
@@ -48,7 +51,7 @@ impl EchoCanvas {
 
         let mut ticker: Interval = time::interval(Duration::from_millis(100));
         let mut amimation_ticker: Interval = time::interval(Duration::from_millis(200));
-        let mut fake_timestamp_ticker: Interval = time::interval(Duration::from_millis(1000));
+        let mut timestamp_ticker: Interval = time::interval(Duration::from_millis(1000));
 
         tokio::spawn(async move {
             loop {
@@ -60,28 +63,13 @@ impl EchoCanvas {
             }
         });
 
-        self.fft_fake = (0..175)
-            .map(|i| (format!("{i}"), rand::random_range(1..5)))
-            .collect();
-
         while !self.state.exit {
-            for (_, val) in self.fft_fake.iter_mut() {
-                let change = rand::random_range(0..5);
-                if rand::random_bool(0.5) {
-                    *val = val.saturating_add(change);
-                } else {
-                    *val = val.saturating_sub(change);
-                }
-                *val = (*val).max(1).min(30);
-            }
-
             tokio::select! {
                 _ = ticker.tick() => {
-                    // Does nothing now, only use for refrashing the UI
+                    self.state.uptime += Duration::from_millis(100);
                 }
 
-                _ = fake_timestamp_ticker.tick() => {
-                    self.caluate_current_timestamp();
+                _ = timestamp_ticker.tick() => {
                 }
 
                 _ = amimation_ticker.tick() => {
@@ -120,36 +108,6 @@ impl EchoCanvas {
         Self::increment_frame_index(&mut self.state.animations.animation_spinner);
         Self::increment_frame_index(&mut self.state.animations.animation_hpulse);
         Self::increment_frame_index(&mut self.state.animations.animation_dot);
-    }
-
-    fn caluate_current_timestamp(&mut self) {
-        let total_ms = self.state.animations.timestamp.1.as_millis();
-        let current_ms = self.state.animations.timestamp.0.as_millis();
-
-        let position: usize = if total_ms == 0 {
-            // Song unloaded
-            0
-        } else if total_ms == current_ms {
-            self.state.animations.timestamp.0 += Duration::from_millis(1000);
-            49
-        } else {
-            let percentage_raw = (current_ms * 50) / total_ms;
-            self.state.animations.timestamp.0 += Duration::from_millis(1000);
-            (percentage_raw as usize).min(50)
-        };
-
-        for i in 0..position {
-            self.state.animations.animation_timestamp.vals[i] =
-                self.config.animations["animations"].timestamp_bar.clone();
-        }
-        self.state.animations.animation_timestamp.vals[position] =
-            self.config.animations["animations"].timestamp.clone();
-
-        self.state.animations.timestamp_location = position;
-
-        if current_ms >= total_ms {
-            self.state.animations.timestamp.0 = Duration::from_millis(0);
-        }
     }
 
     fn draw(&self, frame: &mut Frame) {
