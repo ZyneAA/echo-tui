@@ -1,4 +1,6 @@
+use core::str;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::{cell::RefCell, io, time::Duration};
 
 use ratatui::{
@@ -7,14 +9,18 @@ use ratatui::{
 };
 use strum::{Display, EnumIter, FromRepr};
 
-use super::awdio::AudioPlayer;
+use super::awdio::song::Song;
+use super::result::EchoResult;
 use super::ui;
+use crate::awdio::{AudioPlayer, song};
+use crate::result::EchoError;
 use crate::{config::Config, ignite::Paths};
 
 #[derive(Debug)]
 pub struct AnimationTimeStamp {
     pub vals: [String; 50],
 }
+
 impl Default for AnimationTimeStamp {
     fn default() -> Self {
         let vals = core::array::from_fn(|_| String::from(""));
@@ -75,15 +81,58 @@ impl SelectedTab {
 }
 
 #[derive(Debug, Default)]
+pub enum LogLevel {
+    #[default]
+    INFO,
+    ERR,
+    WARN,
+}
+
+#[derive(Debug, Default)]
+pub struct Report {
+    pub log: String,
+    pub level: LogLevel,
+}
+
+#[derive(Debug, Default)]
 pub struct State {
     pub exit: bool,
     pub selected_tab: SelectedTab,
     pub input: String,
     pub animations: AnimationState,
+
     pub uptime: Duration,
+    pub uptime_readable: String,
+    pub current_clock: String,
+
+    // Local songs
+    pub selected_song_pos: usize,
+    pub local_songs: Vec<Song>,
+
+    // Logging
+    pub report: Arc<Mutex<Report>>,
 }
 
 impl State {
+    pub fn next_local_song(&mut self) {
+        let mut new_index = self.selected_song_pos + 1;
+        if new_index > self.local_songs.len() - 1 {
+            new_index = 0;
+        }
+
+        self.selected_song_pos = new_index;
+    }
+
+    pub fn previous_local_song(&mut self) {
+        let song_count = self.local_songs.len();
+
+        if self.selected_song_pos == 0 {
+            self.selected_song_pos = song_count.saturating_sub(1);
+        } else {
+            self.selected_song_pos -= 1;
+        }
+    }
+
     pub fn set_animations(
         &mut self,
         spinner: usize,
@@ -125,8 +174,9 @@ impl State {
     }
 }
 
-pub async fn start(data: (Config, Paths)) -> io::Result<()> {
+pub async fn start(data: (Config, Paths)) -> EchoResult<()> {
     let mut state = State::default();
+
     state.set_animations(
         data.0.animations["animations"].spinner.len(),
         data.0.animations["animations"].hpulse.len(),
@@ -135,38 +185,17 @@ pub async fn start(data: (Config, Paths)) -> io::Result<()> {
         data.0.animations["animations"].timestamp_bar.clone(),
     );
 
-    let test_song = data.1.songs.join("test4.mp3");
+    let local_songs = song::get_local_songs(data.1.songs.to_str().unwrap());
+    state.local_songs = local_songs;
 
-    let mut audio_player = match AudioPlayer::new(test_song.to_str().unwrap()) {
-        Ok(player) => player,
-        Err(e) => {
-            eprintln!("Failed to create audio player: {}", e);
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to create audio player",
-            ));
-        }
-    };
-
-    if let Err(e) = audio_player.play() {
-        eprintln!("Failed to start audio player: {}", e);
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Failed to start audio player",
-        ));
-    }
-
-    let audio_state = audio_player.state.clone();
-
-    let mut canvas = ui::EchoCanvas::init(state, data.0, audio_state);
+    let mut canvas = ui::EchoCanvas::init(state, data.0, None, AudioPlayer::bad());
 
     let ui = canvas.paint().await;
 
     match ui {
         Ok(()) => Ok(()),
         Err(e) => {
-            eprintln!("UI task failed: {}", e);
-            Err(io::Error::new(io::ErrorKind::Other, "UI task failed"))
+            Err(EchoError::Io(io::Error::other(e)))
         }
     }
 }

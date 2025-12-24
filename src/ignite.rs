@@ -14,12 +14,13 @@ pub struct Paths {
     pub config: PathBuf,
     pub data: PathBuf,
     pub songs: PathBuf,
-    pub playlists: PathBuf
+    pub playlists: PathBuf,
 }
 
 impl Paths {
     fn init() -> io::Result<Self> {
-        let proj = ProjectDirs::from("", "", "echo").ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "couldn't find dirs"))?;
+        let proj = ProjectDirs::from("", "", "echo")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "couldn't find dirs"))?;
 
         let config = proj.config_dir();
         let data = proj.data_dir();
@@ -47,7 +48,7 @@ impl Paths {
             config: config.to_path_buf(),
             data: data.to_path_buf(),
             songs,
-            playlists
+            playlists,
         })
     }
 }

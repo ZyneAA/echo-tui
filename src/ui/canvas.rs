@@ -10,7 +10,11 @@ use ratatui::{
     },
 };
 
-use crate::app::SelectedTab;
+use crate::{
+    app::SelectedTab,
+    awdio::{DurationInfo, song::Song},
+    config::Config,
+};
 
 use super::EchoCanvas;
 use super::components;
@@ -38,7 +42,7 @@ impl Widget for &EchoCanvas {
         let tab_area = header_area[2];
         let tab_area = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(tab_area);
 
         let (
@@ -47,34 +51,50 @@ impl Widget for &EchoCanvas {
             channels,
             file_size,
             duration,
-            is_seeking,
-            is_finished,
+            host,
             is_pause,
             volume,
             total_samples_played,
             min_buffer_threshold,
             fft,
         ) = {
-            let audio = self.audio_state.lock().unwrap();
-            (
-                audio.samples.len(),
-                audio.sample_rate,
-                audio.channels,
-                audio.file_size.clone(),
-                audio.duration.clone(),
-                audio.is_seeking,
-                audio.is_finished,
-                audio.is_pause,
-                audio.volume,
-                audio.total_samples_played,
-                audio.min_buffer_threshold,
-                audio.fft_state.clone(),
-            )
+            match &self.audio_state {
+                Some(v) => {
+                    let audio = v.lock().unwrap();
+                    (
+                        audio.samples.len(),
+                        audio.sample_rate,
+                        audio.channels,
+                        audio.file_size.clone(),
+                        audio.duration.clone(),
+                        audio.host.clone(),
+                        audio.is_pause,
+                        audio.volume,
+                        audio.total_samples_played,
+                        audio.min_buffer_threshold,
+                        audio.fft_state.clone(),
+                    )
+                }
+                None => (
+                    0,
+                    0,
+                    0,
+                    String::new(),
+                    DurationInfo::default(),
+                    String::new(),
+                    false,
+                    0.0,
+                    0,
+                    0,
+                    Vec::new(),
+                ),
+            }
         };
-
         let max_samples = (duration.seconds * sample_rate as u64) as i64;
-        let timestamp = current_timestamp(total_samples_played, sample_rate, channels);
-        let timestamp_percent = ((timestamp.1 / duration.seconds as f64) * 100.0).min(100.0);
+        let timestamp = current_timestamp(total_samples_played, sample_rate);
+        let timestamp_percent = ((timestamp.1 / duration.seconds as f64) * 100.0)
+            .ceil()
+            .min(100.0);
         let position = (((timestamp_percent / 100.0) * 50.0) as usize).min(49);
 
         // Rendering starts here
@@ -85,11 +105,10 @@ impl Widget for &EchoCanvas {
         ];
 
         let is_playing_status = format!(
-            " PLAYING: {} {} {} - ●  {}",
-            max_samples,
-            is_finished,
+            " PLAYING: {} {} - ●  {}",
+            !is_pause,
             self.config.animations["animations"].hpulse[self.state.animations.animation_hpulse.0],
-            position
+            self.state.selected_song_pos
         );
         let title_block = components::bordered_block(
             Line::from(vec![Span::raw(is_playing_status)]),
@@ -108,20 +127,24 @@ impl Widget for &EchoCanvas {
         let timestamp_block =
             components::bordered_block(Line::default(), self.config.colors["colors"].border)
                 .title_style(Style::new().fg(self.config.colors["colors"].title))
-                .title(Line::from(format!(" UPTIME: {:?} ", self.state.uptime)).right_aligned())
+                .title(
+                    Line::from(format!(" UPTIME: {} ", self.state.uptime_readable)).right_aligned(),
+                )
                 .title(Line::from(" ⟐  ").left_aligned())
-                .title(Line::from("12:21:43").centered())
+                .title(Line::from(self.state.current_clock.clone()).centered())
                 .title_bottom(Line::from(format!(" VOL: {:.1} ", volume)))
-                .title_bottom(Line::from("using: macbook's speaker").centered())
+                .title_bottom(Line::from(format!(" HOST: {} ", host)).centered())
                 .title_bottom(Line::from(" TICK: 100ms ").right_aligned());
 
         let mut anim = self.state.animations.animation_timestamp.borrow_mut();
-        for i in 0..=position {
+        for i in 0..=anim.vals.len() - 1 {
+            if i == position {
+                anim.vals[position] = self.config.animations["animations"].timestamp.clone();
+                continue;
+            }
             anim.vals[i] = self.config.animations["animations"].timestamp_bar.clone();
         }
         drop(anim);
-        self.state.animations.animation_timestamp.borrow_mut().vals[position] =
-            self.config.animations["animations"].timestamp.clone();
 
         let timestamp_bar: String = self
             .state
@@ -131,7 +154,7 @@ impl Widget for &EchoCanvas {
             .vals
             .join("");
         let timestamp = format!(
-            "{} ■ {} :|{:.2}%|: {} ■ {}",
+            "{} ■ {} :|{:02}%|: {} ■ {}",
             timestamp.1 as u64, timestamp.0, timestamp_percent, duration.readable, duration.seconds
         );
 
@@ -146,9 +169,7 @@ impl Widget for &EchoCanvas {
         let tab_block =
             components::bordered_block(Line::default(), self.config.colors["colors"].border)
                 .title(" ● ")
-                .title_bottom(" ○ ○ ○ ")
-                .title_style(Style::new().fg(self.config.colors["colors"].title))
-                .border_type(ratatui::widgets::BorderType::Rounded);
+                .title_style(Style::new().fg(self.config.colors["colors"].title));
 
         let spinner = self.config.animations["animations"].spinner.clone();
 
@@ -162,6 +183,13 @@ impl Widget for &EchoCanvas {
         )
         .render(tab_area[0], buf);
 
+        let report = self.state.report.lock().unwrap().log.clone();
+        components::unbordered_block(Line::from(format!("{}", report)))
+            .title_style(Style::default().fg(self.config.colors["colors"].error))
+            .render(tab_area[1], buf);
+
+        let config = &self.config;
+
         match self.state.selected_tab {
             SelectedTab::Echo => render_echo(
                 body_area,
@@ -170,11 +198,15 @@ impl Widget for &EchoCanvas {
                 sample_rate,
                 channels,
                 total_samples_played,
+                max_samples as u64,
                 min_buffer_threshold,
                 fft,
                 self.config.colors["colors"].fg,
                 self.config.colors["colors"].title,
                 self.config.colors["colors"].border,
+                config,
+                &self.state.local_songs,
+                &self.state.selected_song_pos,
             ),
             SelectedTab::Playlist => render_playlist(body_area, buf),
             SelectedTab::Download => render_playlist(body_area, buf),
@@ -189,12 +221,16 @@ fn render_echo(
     sample_buffer_size: usize,
     sample_rate: u32,
     channels: u16,
-    total_sample_played: u64,
+    total_samples_played: u64,
+    max_samples: u64,
     min_buffer_threshold: usize,
     fft_state: Vec<f32>,
     low_color: Color,
     mid_color: Color,
     high_color: Color,
+    config: &Config,
+    songs: &Vec<Song>,
+    selected_song_pos: &usize,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -215,9 +251,10 @@ fn render_echo(
 
     let middle = height / 2.0;
 
-    let gradient_start = hex_to_rgb(&low_color.to_string()).unwrap_or((0, 0, 0));
-    let gradient_mid = hex_to_rgb(&mid_color.to_string()).unwrap_or((0, 0, 0));
-    let gradient_stop = hex_to_rgb(&high_color.to_string()).unwrap_or((255, 255, 255));
+    let gradient_start = hex_to_rgb(&config.colors["colors"].fg.to_string()).unwrap_or((0, 0, 0));
+    let gradient_mid = hex_to_rgb(&config.colors["colors"].title.to_string()).unwrap_or((0, 0, 0));
+    let gradient_stop =
+        hex_to_rgb(&config.colors["colors"].border.to_string()).unwrap_or((255, 255, 255));
 
     let gradient = gradient_steps(gradient_start, gradient_mid, gradient_stop, 32);
 
@@ -243,8 +280,8 @@ fn render_echo(
         .block(
             ttf_block
                 .title_bottom(Line::from(format!(
-                    " ○ ○ TOTAL_SAMPLES_CONSUMED: {} ",
-                    total_sample_played
+                    " ○ ○ SAMPLE_POS: {} / {} • ",
+                    total_samples_played, max_samples
                 )))
                 .title_bottom(
                     Line::from(format!(
@@ -286,8 +323,23 @@ fn render_echo(
     let left_area = body[0];
     let right_area = body[1];
 
-    let title_songs = Line::from("∥ songs ∥");
-    components::bordered_block(title_songs, ratatui::style::Color::Red).render(left_area, buf);
+    let title_songs =
+        Line::from(" SEARCH ").style(Style::default().fg(config.colors["colors"].title));
+    let local_songs_block = components::bordered_block(
+        title_songs,
+        ratatui::style::Color::from(config.colors["colors"].border),
+    );
+
+    components::local_songs_table(
+        songs,
+        config.colors["colors"].fg,
+        config.colors["colors"].bg,
+        config.colors["colors"].accent,
+        config.colors["colors"].title,
+        selected_song_pos,
+    )
+    .block(local_songs_block)
+    .render(left_area, buf);
 
     let info = Layout::default()
         .direction(Direction::Vertical)

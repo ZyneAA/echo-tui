@@ -7,18 +7,23 @@ use rustfft::{FftPlanner, num_complex::Complex};
 use symphonia::core::codecs::Decoder;
 use symphonia::core::formats::FormatReader;
 
-#[derive(Clone)]
+pub mod metadata;
+pub mod song;
+
+#[derive(Clone, Default)]
 pub struct DurationInfo {
     pub readable: String,
     pub seconds: u64,
 }
 
+#[derive(Default)]
 pub struct AudioData {
     pub samples: VecDeque<f32>,
     pub sample_rate: u32,
     pub channels: u16,
     pub file_size: String,
     pub duration: DurationInfo,
+    pub host: String,
 
     pub is_seeking: bool,
     pub is_finished: bool,
@@ -41,6 +46,14 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
+    pub fn bad() -> Self {
+        let audio_data = AudioData::default();
+        Self {
+            state: Arc::new(Mutex::new(audio_data)),
+            cpal_stream: None,
+        }
+    }
+
     pub fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let file = std::fs::File::open(path)?;
         let file_size = human_readable_size(file.metadata()?.len());
@@ -82,6 +95,7 @@ impl AudioPlayer {
             channels,
             file_size,
             duration,
+            host: String::new(),
 
             is_seeking: false,
             is_finished: false,
@@ -108,6 +122,10 @@ impl AudioPlayer {
         let host = cpal::default_host();
         let device = host.default_output_device().expect("no default device");
 
+        let mut state = self.state.lock().unwrap();
+        state.host = device.name().unwrap();
+        drop(state);
+
         let (channels, sample_rate) = {
             let state = self.state.lock().map_err(|_| "Mutex lock failed")?;
             (state.channels, state.sample_rate)
@@ -131,9 +149,12 @@ impl AudioPlayer {
                         }
                         return;
                     }
-                    for sample in data.iter_mut() {
-                        *sample = audio_data.samples.pop_front().unwrap_or(0.0) * audio_data.volume;
-                        if *sample != 0.0 {
+                    for frame in data.chunks_mut(audio_data.channels as usize) {
+                        for (_, sample) in frame.iter_mut().enumerate() {
+                            *sample =
+                                audio_data.samples.pop_front().unwrap_or(0.0) * audio_data.volume;
+                        }
+                        if audio_data.is_finished != true {
                             audio_data.total_samples_played += 1;
                         }
                     }
@@ -153,6 +174,9 @@ impl AudioPlayer {
         });
 
         let fft_state = self.state.clone();
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(2056);
+
         std::thread::spawn(move || {
             loop {
                 let maybe_chunk = {
@@ -167,21 +191,19 @@ impl AudioPlayer {
                 };
 
                 if let Some(chunk) = maybe_chunk {
-                    let fft_result = Self::compute_fft(&chunk);
+                    let fft_result = Self::compute_fft(&chunk, &fft);
                     let mut data = fft_state.lock().unwrap();
                     data.fft_state = fft_result;
                 }
+
+                std::thread::sleep(std::time::Duration::from_millis(30));
             }
         });
 
         Ok(())
     }
 
-    fn compute_fft(samples: &[f32]) -> Vec<f32> {
-        let len = samples.len();
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(len);
-
+    fn compute_fft(samples: &[f32], fft: &Arc<dyn rustfft::Fft<f32>>) -> Vec<f32> {
         let mut buffer: Vec<Complex<f32>> = samples
             .iter()
             .map(|&x| Complex { re: x, im: 0.0 })
@@ -260,9 +282,6 @@ impl AudioPlayer {
                         );
                         sample_buffer.copy_interleaved_ref(decoded);
 
-                        let mut pause = state.lock().unwrap();
-                        pause.is_pause = false;
-
                         Some(sample_buffer.samples().to_vec())
                     }
                     Err(_) => None,
@@ -328,20 +347,23 @@ pub fn skip(
     skip_seconds: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut audio_data = state.lock().unwrap();
-    audio_data.is_pause = true;
     audio_data.is_finished = false;
 
     let sample_rate = audio_data.sample_rate as f64;
-    let samples_to_skip = (skip_seconds * sample_rate) as i64;
+    let channels = audio_data.channels as f64;
+    let samples_to_skip = (skip_seconds * sample_rate * channels) as i64;
 
     let current_position_i64 = audio_data.total_samples_played as i64;
-    let max_samples = (audio_data.duration.seconds * audio_data.sample_rate as u64) as i64;
+
+    let max_samples = (audio_data.duration.seconds as f64 * audio_data.sample_rate as f64) as i64;
 
     let mut target_samples = current_position_i64
         .saturating_add(samples_to_skip)
         .min(max_samples);
-    if target_samples >= max_samples - (sample_rate / 2.0) as i64 {
+
+    if target_samples >= max_samples {
         target_samples = max_samples - 1;
+        audio_data.is_finished = true;
     }
 
     if target_samples < 0 {
@@ -354,12 +376,8 @@ pub fn skip(
     Ok(())
 }
 
-pub fn current_timestamp(
-    total_samples_played: u64,
-    sample_rate: u32,
-    channels: u16,
-) -> (String, f64) {
-    let seconds = total_samples_played as f64 / sample_rate as f64 / channels as f64;
+pub fn current_timestamp(total_samples_played: u64, sample_rate: u32) -> (String, f64) {
+    let seconds = (total_samples_played as f64 / sample_rate as f64).ceil();
 
     let hours = (seconds / 3600.0).floor() as u64;
     let minutes = ((seconds % 3600.0) / 60.0).floor() as u64;

@@ -1,13 +1,12 @@
-use std::io;
-
 mod app;
+mod awdio;
 mod config;
+mod result;
 mod ignite;
 mod ui;
-mod awdio;
 
 #[tokio::main]
-async fn main() -> io::Result<()> {
+async fn main() -> result::EchoResult<()> {
     match ignite::engine() {
         Ok(val) => {
             if let Err(e) = app::start(val).await {

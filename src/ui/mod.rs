@@ -1,5 +1,6 @@
+use chrono::Local;
 use std::{
-    io::{self, stdout},
+    io::stdout,
     sync::{Arc, Mutex},
 };
 
@@ -16,7 +17,9 @@ use tokio::{
     time::{self, Duration, Interval},
 };
 
+use crate::{app::LogLevel, awdio::AudioPlayer};
 use crate::config::Config;
+use crate::result::EchoResult;
 use crate::{app::State, awdio::AudioData};
 
 pub mod canvas;
@@ -26,19 +29,26 @@ pub mod event;
 pub struct EchoCanvas {
     state: State,
     config: Config,
-    audio_state: Arc<Mutex<AudioData>>,
+    audio_player: AudioPlayer,
+    audio_state: Option<Arc<Mutex<AudioData>>>,
 }
 
 impl EchoCanvas {
-    pub fn init(state: State, config: Config, audio_state: Arc<Mutex<AudioData>>) -> Self {
+    pub fn init(
+        state: State,
+        config: Config,
+        audio_state: Option<Arc<Mutex<AudioData>>>,
+        audio_player: AudioPlayer,
+    ) -> Self {
         EchoCanvas {
             state,
             config,
+            audio_player,
             audio_state,
         }
     }
 
-    pub async fn paint(&mut self) -> io::Result<()> {
+    pub async fn paint(&mut self) -> EchoResult<()> {
         enable_raw_mode()?;
         execute!(stdout(), EnterAlternateScreen)?;
 
@@ -66,10 +76,13 @@ impl EchoCanvas {
         while !self.state.exit {
             tokio::select! {
                 _ = ticker.tick() => {
-                    self.state.uptime += Duration::from_millis(100);
+                    // refresh ui
                 }
 
                 _ = timestamp_ticker.tick() => {
+                    self.state.uptime += Duration::from_millis(1000);
+                    self.state.uptime_readable = self.format_uptime();
+                    self.current_time();
                 }
 
                 _ = amimation_ticker.tick() => {
@@ -79,7 +92,11 @@ impl EchoCanvas {
                 Some(evt) = event_rx.recv() => {
                     match self.handle_events(evt).await {
                         Ok(()) => {},
-                        Err(e) => eprintln!("{}", e)
+                        Err(e) => {
+                            let reporter = self.state.report.clone();
+                            reporter.lock().unwrap().log = e.to_string();
+                            reporter.lock().unwrap().level = LogLevel::ERR;
+                        }
                     }
                 }
             }
@@ -108,6 +125,27 @@ impl EchoCanvas {
         Self::increment_frame_index(&mut self.state.animations.animation_spinner);
         Self::increment_frame_index(&mut self.state.animations.animation_hpulse);
         Self::increment_frame_index(&mut self.state.animations.animation_dot);
+    }
+
+    fn format_uptime(&mut self) -> String {
+        let total_secs = self.state.uptime.as_secs();
+
+        let days = total_secs / 86_400;
+        let hours = (total_secs % 86_400) / 3_600;
+        let minutes = (total_secs % 3_600) / 60;
+        let seconds = total_secs % 60;
+
+        match (days, hours, minutes) {
+            (0, 0, 0) => format!("{:02}s", seconds),
+            (0, 0, _) => format!("{:02}m {:02}s", minutes, seconds),
+            (0, _, _) => format!("{:02}h {:02}m {:02}s", hours, minutes, seconds),
+            (_, _, _) => format!("{}d {:02}h {:02}m", days, hours, minutes),
+        }
+    }
+
+    fn current_time(&mut self) {
+        let now = Local::now();
+        self.state.current_clock = now.format(" // %H:%M:%S // ").to_string();
     }
 
     fn draw(&self, frame: &mut Frame) {
