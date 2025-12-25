@@ -1,7 +1,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 
 use super::EchoCanvas;
-use crate::app::LogLevel;
+use crate::app::{LogLevel, Report};
 use crate::result::{EchoError, EchoResult};
 use crate::{
     app::SelectedTab,
@@ -33,18 +33,14 @@ impl EchoCanvas {
                 SelectedTab::Echo => {
                     match self.state.local_songs.get(self.state.selected_song_pos) {
                         Some(v) => {
-                            let reporter = self.state.report.clone();
+                            let reporter = self.state.report_tx.clone();
                             let audio_player = match AudioPlayer::new(&v.path) {
                                 Ok(player) => player,
                                 Err(e) => {
-                                    reporter
-                                        .lock()
-                                        .map_err(|e| EchoError::LockPoisoned(e.to_string()))?
-                                        .log = e.to_string().to_uppercase();
-                                    reporter
-                                        .lock()
-                                        .map_err(|e| EchoError::LockPoisoned(e.to_string()))?
-                                        .level = LogLevel::ERR;
+                                    reporter.send(Report {
+                                        log: Some(EchoError::LockPoisoned(e.to_string())),
+                                        level: LogLevel::ERR
+                                    }).ok();
                                     AudioPlayer::bad()
                                 }
                             };

@@ -1,6 +1,6 @@
 use core::str;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Sender;
 use std::{cell::RefCell, io, time::Duration};
 
 use ratatui::{
@@ -88,13 +88,22 @@ pub enum LogLevel {
     WARN,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Report {
-    pub log: String,
+    pub log: Option<EchoError>,
     pub level: LogLevel,
 }
 
-#[derive(Debug, Default)]
+impl Default for Report {
+    fn default() -> Self {
+        Report {
+            log: None,
+            level: LogLevel::INFO
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct State {
     pub exit: bool,
     pub selected_tab: SelectedTab,
@@ -110,10 +119,25 @@ pub struct State {
     pub local_songs: Vec<Song>,
 
     // Logging
-    pub report: Arc<Mutex<Report>>,
+    pub report_tx: Sender<Report>,
 }
 
 impl State {
+    fn new(tx: Sender<Report>) -> Self {
+        State {
+            exit: false,
+            selected_tab: SelectedTab::default(),
+            input: "".into(),
+            animations: AnimationState::default(),
+            uptime: Duration::default(),
+            uptime_readable: "".into(),
+            current_clock: "".into(),
+            selected_song_pos: 0,
+            local_songs: Vec::new(),
+            report_tx: tx
+        }
+    }
+
     pub fn next_local_song(&mut self) {
         let mut new_index = self.selected_song_pos + 1;
         if new_index > self.local_songs.len() - 1 {
@@ -175,7 +199,8 @@ impl State {
 }
 
 pub async fn start(data: (Config, Paths)) -> EchoResult<()> {
-    let mut state = State::default();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut state = State::new(tx);
 
     state.set_animations(
         data.0.animations["animations"].spinner.len(),
@@ -188,7 +213,7 @@ pub async fn start(data: (Config, Paths)) -> EchoResult<()> {
     let local_songs = song::get_local_songs(data.1.songs.to_str().unwrap());
     state.local_songs = local_songs;
 
-    let mut canvas = ui::EchoCanvas::init(state, data.0, None, AudioPlayer::bad());
+    let mut canvas = ui::EchoCanvas::init(state, data.0, None, AudioPlayer::bad(), rx);
 
     let ui = canvas.paint().await;
 

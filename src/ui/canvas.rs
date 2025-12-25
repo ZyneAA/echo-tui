@@ -183,8 +183,12 @@ impl Widget for &EchoCanvas {
         )
         .render(tab_area[0], buf);
 
-        let report = self.state.report.lock().unwrap().log.clone();
-        components::unbordered_block(Line::from(format!("{}", report)))
+        let report = self.report_rx.try_recv().unwrap_or_default();
+        let report_log = match report.log {
+            Some(e) => e.to_string(),
+            None => "".into()
+        };
+        components::unbordered_block(Line::from(format!("{}", report_log)))
             .title_style(Style::default().fg(self.config.colors["colors"].error))
             .render(tab_area[1], buf);
 

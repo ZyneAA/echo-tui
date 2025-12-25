@@ -1,7 +1,7 @@
 use chrono::Local;
 use std::{
     io::stdout,
-    sync::{Arc, Mutex},
+    sync::{mpsc::Receiver, Arc, Mutex},
 };
 
 use ratatui::{
@@ -17,7 +17,7 @@ use tokio::{
     time::{self, Duration, Interval},
 };
 
-use crate::{app::LogLevel, awdio::AudioPlayer};
+use crate::{app::{LogLevel, Report}, awdio::AudioPlayer};
 use crate::config::Config;
 use crate::result::EchoResult;
 use crate::{app::State, awdio::AudioData};
@@ -31,6 +31,7 @@ pub struct EchoCanvas {
     config: Config,
     audio_player: AudioPlayer,
     audio_state: Option<Arc<Mutex<AudioData>>>,
+    report_rx: Receiver<Report>
 }
 
 impl EchoCanvas {
@@ -39,12 +40,14 @@ impl EchoCanvas {
         config: Config,
         audio_state: Option<Arc<Mutex<AudioData>>>,
         audio_player: AudioPlayer,
+        report_rx: Receiver<Report>
     ) -> Self {
         EchoCanvas {
             state,
             config,
             audio_player,
             audio_state,
+            report_rx
         }
     }
 
@@ -93,9 +96,11 @@ impl EchoCanvas {
                     match self.handle_events(evt).await {
                         Ok(()) => {},
                         Err(e) => {
-                            let reporter = self.state.report.clone();
-                            reporter.lock().unwrap().log = e.to_string();
-                            reporter.lock().unwrap().level = LogLevel::ERR;
+                            let reporter = self.state.report_tx.clone();
+                            reporter.send(Report {
+                                log: Some(e),
+                                level: LogLevel::ERR
+                            }).ok();
                         }
                     }
                 }
