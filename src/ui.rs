@@ -86,26 +86,34 @@ impl EchoCanvas {
             }
         });
 
+        // ── Main event loop ─────────────────────────────────────────────
+        // 1. Drain pending reports. 2. Multiplex tickers + events.
+        // 3. Re-render frame. 4. Exit on Esc.
         while !self.state.exit {
+            // Drain any queued reports from background tasks
             while let Ok(report) = self.report_rx.try_recv() {
                 self.state.current_report = Some(report);
             }
 
             tokio::select! {
+                // 100ms tick — general UI refresh (currently a no-op placeholder)
                 _ = ticker.tick() => {
                     // refresh ui
                 }
 
+                // 1s tick — clock + uptime display
                 _ = timestamp_ticker.tick() => {
                     self.state.uptime += Duration::from_millis(1000);
                     self.state.uptime_readable = self.format_uptime();
                     self.current_time();
                 }
 
+                // 200ms tick — advance spinner, pulse, blink animations
                 _ = amimation_ticker.tick() => {
                     self.update_animations_on_tick();
                 }
 
+                // Keyboard/mouse event from crossterm background task
                 Some(evt) = event_rx.recv() => {
                     match self.handle_events(evt).await {
                         Ok(()) => {},
@@ -121,6 +129,7 @@ impl EchoCanvas {
                 }
             }
 
+            // Re-render the full terminal frame
             let _ = terminal.draw(|frame| self.draw(frame));
         }
 

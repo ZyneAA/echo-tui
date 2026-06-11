@@ -122,6 +122,7 @@ impl AudioPlayer {
         })
     }
 
+    /// Initializes the output stream and starts background decoding/analysis threads.
     pub fn play(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let host = cpal::default_host();
         let device = host.default_output_device().expect("no default device");
@@ -173,6 +174,7 @@ impl AudioPlayer {
         self.cpal_stream = Some(stream);
 
         let state_clone_2 = self.state.clone();
+        // Background thread to continuously decode packets into the buffer.
         std::thread::spawn(move || {
             Self::decode_loop(state_clone_2);
         });
@@ -181,6 +183,7 @@ impl AudioPlayer {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(2056);
 
+        // Background thread to perform real-time spectral analysis on the buffer.
         std::thread::spawn(move || {
             loop {
                 let maybe_chunk = {
