@@ -47,7 +47,7 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
             canvas.state.switch_echo_subtab('M');
         }
 
-        (KeyCode::Char('i'), KeyModifiers::NONE) => {
+        (KeyCode::Char('|'), KeyModifiers::NONE) => {
             let pool = canvas.db_connection_pool.clone();
             let song_path = canvas.all_paths.songs.clone();
 
@@ -146,20 +146,22 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
         (KeyCode::Char('h'), _) => canvas.skip_audio(-1.0)?,
         (KeyCode::Char('l'), _) => canvas.skip_audio(1.0)?,
 
-        (KeyCode::Char('|'), _) => match canvas.state.echo_tab_state.echo_subtab {
+        (KeyCode::Char('i'), _) => match canvas.state.echo_tab_state.echo_subtab {
             EchoSubTab::SEARCH => {
                 canvas
                     .state
                     .echo_tab_state
                     .is_echo_search_buffer_being_filled = true;
-                return sub_events::handle_echo_search_key_event(canvas, key_event);
+
+                return Ok(());
             }
             EchoSubTab::IMPORT => {
                 canvas
                     .state
                     .echo_tab_state
                     .is_echo_import_buffer_being_filled = true;
-                return sub_events::handle_echo_import_key_enent(canvas, key_event).await;
+
+                return Ok(());
             }
 
             EchoSubTab::METADATA => {

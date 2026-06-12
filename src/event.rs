@@ -1,7 +1,3 @@
-use std::path::Path;
-
-use tokio::fs;
-
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{DownloadState, LogLevel, PlaylistSubTab, Report};
