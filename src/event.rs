@@ -1,5 +1,3 @@
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
-
 use crate::app::{DownloadState, LogLevel, PlaylistSubTab, Report};
 use crate::awdio::AudioPlayer;
 use crate::awdio::metadata::Metadata;
@@ -9,6 +7,7 @@ use crate::download;
 use crate::result::{EchoReport, EchoResult};
 use crate::ui::EchoCanvas;
 use crate::{app::SelectedTab, awdio::AudioData, awdio::skip};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 
 mod echo;
 

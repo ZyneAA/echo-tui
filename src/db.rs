@@ -4,7 +4,7 @@ use std::str::FromStr;
 use crate::awdio::metadata::Metadata;
 use crate::result::EchoResult;
 
-pub mod library;
+pub mod repository;
 
 pub async fn init_db(path: &str) -> EchoResult<SqlitePool> {
     let options = SqliteConnectOptions::from_str(path)?

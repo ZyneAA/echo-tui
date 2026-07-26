@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use tokio::fs;
 
@@ -23,7 +23,8 @@ pub async fn handle_echo_import_key_enent(
     {
         match key_event.code {
             KeyCode::Char(c) => {
-                canvas.state.echo_tab_state.import_buffer.push(c);
+                let mut guard = canvas.state.echo_tab_state.import_buffer.lock().await;
+                guard.push(c);
             }
             KeyCode::Enter => {
                 canvas
@@ -31,9 +32,15 @@ pub async fn handle_echo_import_key_enent(
                     .echo_tab_state
                     .is_echo_import_buffer_being_filled = false;
                 let pool = canvas.db_connection_pool.clone();
-                let song_path = canvas.state.echo_tab_state.import_buffer.clone();
+
+                let song_path_arc = Arc::clone(&canvas.state.echo_tab_state.import_buffer);
 
                 tokio::spawn(async move {
+                    let song_path = {
+                        let guard = song_path_arc.lock().await;
+                        guard.clone()
+                    };
+
                     let mut entries = match fs::read_dir(&song_path).await {
                         Ok(e) => e,
                         Err(e) => {
@@ -112,7 +119,9 @@ pub async fn handle_echo_import_key_enent(
                 return Ok(());
             }
             KeyCode::Backspace => {
-                canvas.state.echo_tab_state.import_buffer.pop();
+                let mut guard = canvas.state.echo_tab_state.import_buffer.lock().await;
+                guard.pop();
+
                 return Ok(());
             }
             KeyCode::Esc => {

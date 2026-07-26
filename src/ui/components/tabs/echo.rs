@@ -1,4 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::sync::Mutex;
 
 use ratatui::text::Span;
 use ratatui::widgets::{Paragraph, Widget};
@@ -42,6 +46,7 @@ pub fn render_echo(
     let title = config.colors["colors"].title;
     let bg = config.colors["colors"].bg;
     let buffer = &echo_tab_state.metadata_buffer;
+    let import_buf = echo_tab_state.import_buffer.clone();
 
     let chunks = if echo_tab_state.is_fft_enable {
         Layout::default()
@@ -163,7 +168,7 @@ pub fn render_echo(
                 buf,
                 echo_main_title.clone(),
                 config,
-                &echo_tab_state.import_buffer,
+                echo_tab_state.import_buffer.clone(),
                 info,
                 title,
                 echo_tab_state,
@@ -206,7 +211,7 @@ pub fn render_echo(
                     buf,
                     echo_main_title.clone(),
                     config,
-                    buffer,
+                    import_buf,
                     info,
                     title,
                     echo_tab_state,
@@ -395,12 +400,12 @@ fn echo_main_title_metadata<'a>(info: Color, title: Color, bg: Color) -> Line<'a
     ])
 }
 
-fn render_import_subtab(
+async fn render_import_subtab(
     left_area: Rect,
     buf: &mut Buffer,
     echo_main_title: Line<'static>,
     config: &UiConfig, // Adjust this type if needed
-    buffer: &String,
+    buffer: Arc<Mutex<String>>,
     info: ratatui::style::Color,
     title: ratatui::style::Color,
     echo_tab_state: &EchoTabState,
@@ -420,10 +425,17 @@ fn render_import_subtab(
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(inner_area);
 
-    let input_block =
-        shared::block::inner_input_block(buffer, info, title, &echo_tab_state.echo_subtab, true);
+    let guard = buffer.lock().await;
+    let buf_ref: &str= &*guard;
+    let input_block = shared::block::inner_input_block(
+        buf_ref,
+        info,
+        title,
+        &echo_tab_state.echo_subtab,
+        true,
+    );
 
-    let input_widget = Paragraph::new(buffer.as_str())
+    let input_widget = Paragraph::new(buf_ref)
         .block(input_block)
         .style(Style::default().fg(info));
 

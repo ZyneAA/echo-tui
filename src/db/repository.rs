@@ -5,9 +5,9 @@ use crate::{
 use sqlx::sqlite::SqlitePool;
 
 #[derive(Debug, Clone)]
-pub struct Library;
+pub struct Repository;
 
-impl Library {
+impl Repository {
     pub async fn get_songs_from_db(
         pool: &SqlitePool,
         start: usize,

@@ -1,5 +1,5 @@
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc::Sender};
 use std::{cell::RefCell, io, time::Duration};
 
 use ratatui::{
@@ -8,14 +8,17 @@ use ratatui::{
 };
 use sqlx::SqlitePool;
 use strum::{Display, EnumIter, FromRepr};
-use tokio::time::{self, Interval};
+use tokio::{
+    sync::Mutex,
+    time::{self, Interval},
+};
 
 use super::awdio::song::Song;
 use super::result::EchoResult;
 use super::ui;
 use crate::awdio::AudioPlayer;
 use crate::db::Playlist;
-use crate::db::library::Library;
+use crate::db::repository::Repository;
 use crate::result::EchoReport;
 use crate::{config::UiConfig, ignite::Paths};
 
@@ -150,7 +153,7 @@ pub struct EchoTabState {
     pub search_buffer: String,
 
     pub is_echo_import_buffer_being_filled: bool,
-    pub import_buffer: String,
+    pub import_buffer: Arc<Mutex<String>>,
 
     pub is_zero_local_song: bool,
 }
@@ -168,7 +171,7 @@ impl EchoTabState {
             is_zero_local_song: true,
             metadata_buffer: "".into(),
             search_buffer: "".into(),
-            import_buffer: "".into(),
+            import_buffer: Arc::new(Mutex::new("".into())),
         }
     }
 }
@@ -328,7 +331,7 @@ pub async fn start(data: (UiConfig, SqlitePool, Paths)) -> EchoResult<()> {
         data.0.animations["animations"].timestamp_bar.clone(),
     );
 
-    let local_songs = Library::get_songs_from_db(&data.1, 0, 10).await?;
+    let local_songs = Repository::get_songs_from_db(&data.1, 0, 10).await?;
     if local_songs.len() == 0 {
         state.echo_tab_state.is_zero_local_song = true;
     }
