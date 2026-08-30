@@ -87,8 +87,6 @@ impl EchoCanvas {
         });
 
         // ── Main event loop ─────────────────────────────────────────────
-        // 1. Drain pending reports. 2. Multiplex tickers + events.
-        // 3. Re-render frame. 4. Exit on Esc.
         while !self.state.exit {
             // Drain any queued reports from background tasks
             while let Ok(report) = self.report_rx.try_recv() {

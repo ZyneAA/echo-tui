@@ -26,7 +26,6 @@ impl EchoCanvas {
     async fn handle_key_event(&mut self, key_event: KeyEvent) -> EchoResult<()> {
         match key_event.code {
             KeyCode::Esc => {
-                // If we're in an input mode, cancel it; otherwise exit
                 match self.state.selected_tab {
                     SelectedTab::Download => {
                         if matches!(self.state.download_state, DownloadState::InputUrl) {

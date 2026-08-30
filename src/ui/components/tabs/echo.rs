@@ -400,7 +400,7 @@ fn echo_main_title_metadata<'a>(info: Color, title: Color, bg: Color) -> Line<'a
     ])
 }
 
-async fn render_import_subtab(
+fn render_import_subtab(
     left_area: Rect,
     buf: &mut Buffer,
     echo_main_title: Line<'static>,
@@ -425,8 +425,11 @@ async fn render_import_subtab(
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(inner_area);
 
-    let guard = buffer.lock().await;
-    let buf_ref: &str= &*guard;
+    let guard = buffer.try_lock();
+    let buf_ref: &str = match &guard {
+        Ok(g) => g.as_str(),
+        Err(_) => "",
+    };
     let input_block = shared::block::inner_input_block(
         buf_ref,
         info,

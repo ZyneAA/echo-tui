@@ -94,8 +94,7 @@ pub async fn handle_echo_import_key_enent(
                             }
                         };
 
-                        let new_file_name = format!("{}{}.mp3", song_path, id);
-                        let new_path = Path::new(&new_file_name);
+                        let new_path = Path::new(&song_path).join(format!("{}.mp3", id));
 
                         if let Err(e) = fs::rename(&old_path, &new_path).await {
                             eprintln!("rename error: {:?}", e);
