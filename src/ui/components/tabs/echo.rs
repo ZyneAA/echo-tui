@@ -4,8 +4,10 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+use ratatui::style::Modifier;
 use ratatui::text::Span;
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::text::Text;
+use ratatui::widgets::{Cell, Paragraph, Row, Table, Widget};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -430,19 +432,86 @@ fn render_import_subtab(
         Ok(g) => g.as_str(),
         Err(_) => "",
     };
-    let input_block = shared::block::inner_input_block(
-        buf_ref,
-        info,
-        title,
-        &echo_tab_state.echo_subtab,
-        true,
-    );
+    let input_block =
+        shared::block::inner_input_block(buf_ref, info, title, &echo_tab_state.echo_subtab, true);
 
     let input_widget = Paragraph::new(buf_ref)
         .block(input_block)
         .style(Style::default().fg(info));
 
     input_widget.render(import_layout[0], buf);
+
+    let list_area = import_layout[1];
+
+    if !echo_tab_state.import_file_list.is_empty() {
+        let fg = config.colors["colors"].fg;
+        let sel_pos = echo_tab_state.import_file_selected_pos;
+
+        let rows = echo_tab_state
+            .import_file_list
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let marker = if echo_tab_state
+                    .import_selected
+                    .get(i)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    "[x]"
+                } else {
+                    "[ ]"
+                };
+                let name = std::path::Path::new(f)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(f);
+                let row_style = if i == sel_pos {
+                    Style::default().add_modifier(Modifier::REVERSED).fg(title)
+                } else {
+                    Style::default().fg(fg)
+                };
+                Row::new(vec![Cell::from(Text::from(format!(
+                    " {} {}",
+                    marker, name
+                )))])
+                .height(1)
+                .style(row_style)
+            });
+
+        let table = Table::new(rows, [Constraint::Percentage(100)]).block(
+            shared::block::bordered_block(
+                Line::from(" FILES "),
+                ratatui::style::Color::from(config.colors["colors"].border),
+            )
+            .title_bottom(" w/s nav · SPACE select · a all · ENTER import · ESC cancel ")
+            .title_style(Style::default().fg(config.colors["colors"].title)),
+        );
+
+        table.render(list_area, buf);
+    }
+
+    if echo_tab_state.is_confirm_import {
+        let n = echo_tab_state
+            .import_selected
+            .iter()
+            .filter(|s| **s)
+            .count();
+        let prompt = Paragraph::new(
+            Line::from(format!(" IMPORT {} FILE(S)? (y/n) ", n)).style(
+                Style::default()
+                    .fg(config.colors["colors"].bg)
+                    .bg(config.colors["colors"].accent),
+            ),
+        );
+        let area = Rect {
+            x: inner_area.x,
+            y: inner_area.bottom().saturating_sub(1),
+            width: inner_area.width,
+            height: 1,
+        };
+        prompt.render(area, buf);
+    }
 }
 
 fn render_search_subtab<'a>(
@@ -498,4 +567,21 @@ fn render_search_subtab<'a>(
     );
 
     table.render(chunks[1], buf);
+
+    if echo_tab_state.is_confirm_delete {
+        let prompt = Paragraph::new(
+            Line::from(" DELETE SONG FROM DB? (y/n) ").style(
+                Style::default()
+                    .fg(config.colors["colors"].bg)
+                    .bg(config.colors["colors"].accent),
+            ),
+        );
+        let area = Rect {
+            x: inner_area.x,
+            y: inner_area.bottom().saturating_sub(1),
+            width: inner_area.width,
+            height: 1,
+        };
+        prompt.render(area, buf);
+    }
 }

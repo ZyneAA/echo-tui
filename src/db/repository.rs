@@ -58,4 +58,11 @@ impl Repository {
 
         Ok(song_list)
     }
+
+    pub async fn delete_song_by_path(pool: &SqlitePool, file_path: &str) -> EchoResult<()> {
+        sqlx::query!("DELETE FROM songs WHERE file_path = ?", file_path)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 }

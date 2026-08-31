@@ -151,9 +151,14 @@ pub struct EchoTabState {
 
     pub is_echo_search_buffer_being_filled: bool,
     pub search_buffer: String,
+    pub is_confirm_delete: bool,
 
     pub is_echo_import_buffer_being_filled: bool,
     pub import_buffer: Arc<Mutex<String>>,
+    pub import_file_list: Vec<String>,
+    pub import_file_selected_pos: usize,
+    pub import_selected: Vec<bool>,
+    pub is_confirm_import: bool,
 
     pub is_zero_local_song: bool,
 }
@@ -167,7 +172,12 @@ impl EchoTabState {
             echo_metadata_selected_pos: 0,
             is_echo_metadata_buffer_being_filled: false,
             is_echo_search_buffer_being_filled: false,
+            is_confirm_delete: false,
             is_echo_import_buffer_being_filled: false,
+            import_file_list: Vec::new(),
+            import_file_selected_pos: 0,
+            import_selected: Vec::new(),
+            is_confirm_import: false,
             is_zero_local_song: true,
             metadata_buffer: "".into(),
             search_buffer: "".into(),
