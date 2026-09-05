@@ -24,6 +24,16 @@ impl EchoCanvas {
     }
 
     async fn handle_key_event(&mut self, key_event: KeyEvent) -> EchoResult<()> {
+        // exit confirmation prompt (free mode Esc)
+        if self.state.is_confirm_exit {
+            match key_event.code {
+                KeyCode::Char('y') | KeyCode::Enter => self.state.exit = true,
+                KeyCode::Char('n') | KeyCode::Esc => self.state.is_confirm_exit = false,
+                _ => {}
+            }
+            return Ok(());
+        }
+
         match key_event.code {
             KeyCode::Esc => {
                 match self.state.selected_tab {
@@ -56,7 +66,7 @@ impl EchoCanvas {
                     _ => {}
                 }
 
-                self.state.exit = true;
+                self.state.is_confirm_exit = true;
                 return Ok(());
             }
             KeyCode::Right => {

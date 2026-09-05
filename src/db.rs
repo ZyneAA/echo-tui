@@ -176,3 +176,75 @@ pub async fn get_playlist_song_paths(
     .await?;
     Ok(rows)
 }
+
+#[derive(Debug, Clone)]
+pub struct DownloadRow {
+    pub id: i64,
+    pub url: String,
+    pub source: String,
+    pub status: String,
+    pub finished_at: Option<String>,
+}
+
+pub async fn insert_download(pool: &SqlitePool, url: &str, source: &str) -> EchoResult<i64> {
+    let id = sqlx::query!(
+        "INSERT INTO downloads (url, source) VALUES (?, ?)",
+        url,
+        source
+    )
+    .execute(pool)
+    .await?
+    .last_insert_rowid();
+    Ok(id)
+}
+
+pub async fn finish_download(
+    pool: &SqlitePool,
+    id: i64,
+    status: &str,
+    file_path: Option<&str>,
+) -> EchoResult<()> {
+    sqlx::query!(
+        "UPDATE downloads SET status = ?, file_path = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+        status,
+        file_path,
+        id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Paginated history (completed/failed), newest first. Fetches limit+1 rows to detect has_more.
+pub async fn get_download_history(
+    pool: &SqlitePool,
+    page: usize,
+    page_size: usize,
+) -> EchoResult<(Vec<DownloadRow>, bool)> {
+    let limit = (page_size + 1) as i64;
+    let offset = (page * page_size) as i64;
+
+    let rows = sqlx::query!(
+        r#"SELECT id, url, source, status, finished_at AS "finished_at: Option<String>" FROM downloads
+         WHERE status != 'running' ORDER BY id DESC LIMIT ? OFFSET ?"#,
+        limit,
+        offset
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let has_more = rows.len() > page_size;
+    let rows = rows
+        .into_iter()
+        .take(page_size)
+        .map(|r| DownloadRow {
+            id: r.id,
+            url: r.url,
+            source: r.source,
+            status: r.status,
+            finished_at: r.finished_at.flatten(),
+        })
+        .collect();
+
+    Ok((rows, has_more))
+}

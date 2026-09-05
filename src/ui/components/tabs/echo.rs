@@ -4,6 +4,9 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+use crate::app::EchoSubTab;
+use crate::ui::components::shared;
+use crate::{app::EchoTabState, awdio::song::Song, config::UiConfig};
 use ratatui::style::Modifier;
 use ratatui::text::Span;
 use ratatui::text::Text;
@@ -18,11 +21,6 @@ use ratatui::{
         canvas::{Canvas, Points},
     },
 };
-use toml::to_string;
-
-use crate::app::EchoSubTab;
-use crate::ui::components::shared;
-use crate::{app::EchoTabState, awdio::song::Song, config::UiConfig};
 
 pub fn render_echo(
     area: Rect,
@@ -163,7 +161,18 @@ pub fn render_echo(
     };
 
     match echo_tab_state.echo_subtab {
-        EchoSubTab::DOWNLOAD => {}
+        EchoSubTab::DOWNLOAD => {
+            render_download_subtab(
+                left_area,
+                buf,
+                echo_main_title.clone(),
+                config,
+                &echo_tab_state.download_buffer,
+                info,
+                title,
+                echo_tab_state,
+            );
+        }
         EchoSubTab::IMPORT => {
             render_import_subtab(
                 left_area,
@@ -258,8 +267,14 @@ pub fn render_echo(
     )
     .title_bottom(Line::from(vec![
         Span::styled(
-            " BUFF: ",
-            Style::default().fg(config.colors["colors"].title),
+            if echo_tab_state.is_echo_metadata_buffer_being_filled {
+                " INSERT: "
+            } else {
+                " BUFF: "
+            },
+            Style::default()
+                .fg(config.colors["colors"].bg)
+                .bg(config.colors["colors"].accent),
         ),
         Span::styled(
             format!("{} ", buffer),
@@ -279,11 +294,11 @@ pub fn render_echo(
 
     let selected_song_metadata = &songs[*selected_song_pos].metadata;
 
-    let year_binding = &to_string(&selected_song_metadata.year).unwrap_or_default();
-    let track_number_binding = &to_string(&selected_song_metadata.track_number).unwrap_or_default();
-    let total_tracks_binding = &to_string(&selected_song_metadata.total_tracks).unwrap_or_default();
-    let disc_number_binding = &to_string(&selected_song_metadata.disc_number).unwrap_or_default();
-    let total_discs_binding = &to_string(&selected_song_metadata.total_discs).unwrap_or_default();
+    let year_binding = &selected_song_metadata.year.to_string();
+    let track_number_binding = &selected_song_metadata.track_number.to_string();
+    let total_tracks_binding = &selected_song_metadata.total_tracks.to_string();
+    let disc_number_binding = &selected_song_metadata.disc_number.to_string();
+    let total_discs_binding = &selected_song_metadata.total_discs.to_string();
     let metadata = vec![
         ("TITLE", &selected_song_metadata.title),
         ("ARTIST", &selected_song_metadata.artist),
@@ -432,8 +447,14 @@ fn render_import_subtab(
         Ok(g) => g.as_str(),
         Err(_) => "",
     };
-    let input_block =
-        shared::block::inner_input_block(buf_ref, info, title, &echo_tab_state.echo_subtab, true);
+    let input_block = shared::block::inner_input_block(
+        buf_ref,
+        info,
+        title,
+        &echo_tab_state.echo_subtab,
+        true,
+        &crate::app::SearchFilter::All,
+    );
 
     let input_widget = Paragraph::new(buf_ref)
         .block(input_block)
@@ -514,6 +535,155 @@ fn render_import_subtab(
     }
 }
 
+fn render_download_subtab(
+    left_area: Rect,
+    buf: &mut Buffer,
+    echo_main_title: Line<'static>,
+    config: &UiConfig,
+    buffer: &String,
+    info: ratatui::style::Color,
+    title: ratatui::style::Color,
+    echo_tab_state: &EchoTabState,
+) {
+    let border = ratatui::style::Color::from(config.colors["colors"].border);
+    let fg = config.colors["colors"].fg;
+    let bg = config.colors["colors"].bg;
+    let accent = config.colors["colors"].accent;
+
+    let outer_block = shared::block::bordered_block(echo_main_title, border)
+        .title_bottom(" i queue URL · w/s pane · n/b page ")
+        .title_style(Style::default().fg(config.colors["colors"].title));
+
+    let inner_area = outer_block.inner(left_area);
+    outer_block.render(left_area, buf);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // URL input
+            Constraint::Min(0),    // panes
+        ])
+        .split(inner_area);
+
+    let input_block = shared::block::inner_input_block(
+        buffer,
+        info,
+        title,
+        &echo_tab_state.echo_subtab,
+        echo_tab_state.is_echo_download_buffer_being_filled,
+        &crate::app::SearchFilter::All,
+    )
+    .title(" [ URL ] ");
+    Paragraph::new(buffer.as_str())
+        .block(input_block)
+        .style(Style::default().fg(info))
+        .render(chunks[0], buf);
+
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
+
+    // ── PROGRESSES pane ──
+    let prog_title = pane_title(" PROGRESSES ", echo_tab_state.download_pane == 0, config);
+    let prog_entries: Vec<crate::app::DownloadProgress> =
+        echo_tab_state.download_progress.lock().unwrap().clone();
+    let prog_rows: Vec<Row> = if prog_entries.is_empty() {
+        vec![Row::new(vec![Cell::from(Text::from(" no active downloads"))]).height(1)]
+    } else {
+        prog_entries
+            .iter()
+            .map(|p| {
+                Row::new(vec![Cell::from(Text::from(format!(
+                    " [{}%] {} · {} · {} ({})",
+                    p.percent as u32,
+                    if p.speed.is_empty() { "…" } else { &p.speed },
+                    p.started_at,
+                    p.url,
+                    p.source
+                )))])
+                .height(1)
+            })
+            .collect()
+    };
+    Table::new(prog_rows, [Constraint::Percentage(100)])
+        .block(shared::block::bordered_block(prog_title, border))
+        .render(panes[0], buf);
+
+    // ── HISTORY pane ──
+    let hist_title = pane_title(" HISTORY ", echo_tab_state.download_pane == 1, config);
+    let hist_block = shared::block::bordered_block(hist_title, border)
+        .title_bottom(Line::from(Span::styled(
+            format!(
+                " page {}{} ",
+                echo_tab_state.download_history_page + 1,
+                if echo_tab_state.download_history_has_more {
+                    "+"
+                } else {
+                    ""
+                }
+            ),
+            Style::default().fg(config.colors["colors"].title),
+        )))
+        .title_style(Style::default().fg(config.colors["colors"].title));
+
+    let hist_rows: Vec<Row> = if echo_tab_state.download_history.is_empty() {
+        vec![Row::new(vec![Cell::from(Text::from(" no downloads yet"))]).height(1)]
+    } else {
+        echo_tab_state
+            .download_history
+            .iter()
+            .map(|h| {
+                Row::new(vec![Cell::from(Text::from(format!(
+                    " [{}] {} · {} · finished {}",
+                    h.status,
+                    h.source,
+                    h.url,
+                    h.finished_at.as_deref().unwrap_or("?")
+                )))])
+                .height(1)
+                .style(if h.status == "failed" {
+                    Style::default().fg(accent)
+                } else {
+                    Style::default().fg(fg)
+                })
+            })
+            .collect()
+    };
+    Table::new(hist_rows, [Constraint::Percentage(100)])
+        .block(hist_block)
+        .render(panes[1], buf);
+
+    // INSERT badge while entering URL
+    if echo_tab_state.is_echo_download_buffer_being_filled {
+        let badge =
+            Paragraph::new(Line::from(" INSERT MODE ").style(Style::default().fg(bg).bg(accent)));
+        let area = Rect {
+            x: inner_area.x,
+            y: inner_area.bottom().saturating_sub(1),
+            width: inner_area.width,
+            height: 1,
+        };
+        badge.render(area, buf);
+    }
+}
+
+fn pane_title(text: &'static str, focused: bool, config: &UiConfig) -> Line<'static> {
+    if focused {
+        Line::from(Span::styled(
+            text,
+            Style::default()
+                .fg(config.colors["colors"].bg)
+                .bg(config.colors["colors"].accent),
+        ))
+    } else {
+        Line::from(Span::styled(
+            text,
+            Style::default().fg(config.colors["colors"].title),
+        ))
+    }
+}
+
 fn render_search_subtab<'a>(
     left_area: Rect,
     buf: &mut Buffer,
@@ -547,8 +717,14 @@ fn render_search_subtab<'a>(
 
     outer_block.render(left_area, buf);
 
-    let input_block =
-        shared::block::inner_input_block(buffer, info, title, &echo_tab_state.echo_subtab, true);
+    let input_block = shared::block::inner_input_block(
+        buffer,
+        info,
+        title,
+        &echo_tab_state.echo_subtab,
+        true,
+        &echo_tab_state.search_filter,
+    );
 
     let input_widget = Paragraph::new(buffer.as_str())
         .block(input_block)
@@ -556,17 +732,99 @@ fn render_search_subtab<'a>(
 
     input_widget.render(chunks[0], buf);
 
+    // step 1 of search: filter picker menu
+    if echo_tab_state.search_filter_selecting {
+        let rows = crate::app::SearchFilter::OPTIONS
+            .iter()
+            .enumerate()
+            .map(|(i, opt)| {
+                let hint = match i {
+                    0 => "enter",
+                    1 => "t",
+                    2 => "a",
+                    3 => "l",
+                    _ => "g",
+                };
+                let row_style = if i == echo_tab_state.search_filter_pos {
+                    Style::default().add_modifier(Modifier::REVERSED).fg(title)
+                } else {
+                    Style::default().fg(config.colors["colors"].fg)
+                };
+                Row::new(vec![Cell::from(Text::from(format!(
+                    " {} ({})",
+                    opt.label(),
+                    hint
+                )))])
+                .height(1)
+                .style(row_style)
+            });
+        let menu = Table::new(rows, [Constraint::Percentage(100)]).block(
+            shared::block::bordered_block(
+                Line::from(" PICK FILTER (w/s · keybind · enter) "),
+                ratatui::style::Color::from(config.colors["colors"].border),
+            )
+            .title_style(Style::default().fg(config.colors["colors"].title)),
+        );
+        menu.render(chunks[1], buf);
+        return;
+    }
+
+    // query set but nothing matched -> show nothing
+    if !echo_tab_state.search_buffer.is_empty() && echo_tab_state.search_matched.is_empty() {
+        let none = Paragraph::new("NO MATCHES.")
+            .style(Style::default().fg(config.colors["colors"].fg))
+            .centered();
+        none.render(chunks[1], buf);
+        return;
+    }
+
+    // step 2: live filter by active SearchFilter; map selection to filtered position
+    let (list, display_pos) = if echo_tab_state.search_matched.is_empty() {
+        (songs.clone(), *selected_song_pos)
+    } else {
+        let filtered: Vec<Song> = echo_tab_state
+            .search_matched
+            .iter()
+            .filter_map(|&i| songs.get(i).cloned())
+            .collect();
+        let pos = echo_tab_state
+            .search_matched
+            .iter()
+            .position(|&i| i == *selected_song_pos)
+            .unwrap_or(0)
+            .min(filtered.len().saturating_sub(1));
+        (filtered, pos)
+    };
+
     let table = shared::table::local_songs_table(
-        songs,
+        &list,
         config.colors["colors"].fg,
         config.colors["colors"].bg,
         config.colors["colors"].accent,
         config.colors["colors"].title,
-        selected_song_pos,
+        &display_pos,
         &echo_tab_state.echo_subtab,
     );
 
     table.render(chunks[1], buf);
+
+    // status line: INSERT badge while typing
+    if echo_tab_state.is_echo_search_buffer_being_filled {
+        let badge = Paragraph::new(
+            Line::from(" INSERT MODE ").style(
+                Style::default()
+                    .fg(config.colors["colors"].bg)
+                    .bg(config.colors["colors"].accent),
+            ),
+        );
+        let area = Rect {
+            x: inner_area.x,
+            y: inner_area.bottom().saturating_sub(1),
+            width: inner_area.width,
+            height: 1,
+        };
+        badge.render(area, buf);
+    }
 
     if echo_tab_state.is_confirm_delete {
         let prompt = Paragraph::new(

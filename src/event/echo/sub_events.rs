@@ -12,7 +12,7 @@ use crate::{
     ui::EchoCanvas,
 };
 
-async fn import_file(
+pub(crate) async fn import_file(
     pool: &sqlx::sqlite::SqlitePool,
     old_path: &Path,
     songs_dir: &Path,
@@ -76,6 +76,174 @@ fn report_err(reporter: &std::sync::mpsc::Sender<Report>, msg: String) {
         .ok();
 }
 
+pub async fn reload_download_history(canvas: &mut EchoCanvas) {
+    let page = canvas.state.echo_tab_state.download_history_page;
+    match db::get_download_history(&canvas.db_connection_pool, page, 10).await {
+        Ok((rows, has_more)) => {
+            canvas.state.echo_tab_state.download_history = rows;
+            canvas.state.echo_tab_state.download_history_has_more = has_more;
+        }
+        Err(e) => report_err(
+            &canvas.state.report_tx,
+            format!("history load error: {}", e),
+        ),
+    }
+}
+
+async fn queue_download(canvas: &mut EchoCanvas) {
+    let url = canvas
+        .state
+        .echo_tab_state
+        .download_buffer
+        .trim()
+        .to_string();
+    if url.is_empty() {
+        return;
+    }
+
+    let source = "youtube"; // only source for now
+    let id = match db::insert_download(&canvas.db_connection_pool, &url, source).await {
+        Ok(id) => id,
+        Err(e) => {
+            report_err(&canvas.state.report_tx, format!("queue error: {}", e));
+            return;
+        }
+    };
+
+    let entry = crate::app::DownloadProgress {
+        id,
+        url: url.clone(),
+        source: source.into(),
+        percent: 0.0,
+        speed: "".into(),
+        started_at: chrono::Local::now().format("%H:%M:%S").to_string(),
+    };
+    canvas
+        .state
+        .echo_tab_state
+        .download_progress
+        .lock()
+        .unwrap()
+        .push(entry);
+
+    let pool = canvas.db_connection_pool.clone();
+    let songs_dir = canvas.all_paths.songs.clone();
+    let reporter = canvas.state.report_tx.clone();
+    let progress = canvas.state.echo_tab_state.download_progress.clone();
+
+    tokio::spawn(async move {
+        let result = crate::download::download_mp3_with_progress(&url, &songs_dir, |tick| {
+            let mut list = progress.lock().unwrap();
+            if let Some(e) = list.iter_mut().find(|e| e.id == id) {
+                e.percent = tick.percent;
+                e.speed = tick.speed;
+            }
+        })
+        .await;
+
+        // remove from progress pane
+        progress.lock().unwrap().retain(|e| e.id != id);
+
+        match result {
+            Ok(path) => {
+                // import into library (insert -> copy to {id}.mp3 -> tags)
+                let imported = import_file(&pool, &path, &songs_dir).await;
+                if imported.is_ok() {
+                    // original video-titled file already copied; drop it
+                    let _ = tokio::fs::remove_file(&path).await;
+                }
+                let status = match &imported {
+                    Ok(_) => "completed",
+                    Err(_) => "completed_import_failed",
+                };
+                let _ = db::finish_download(&pool, id, status, path.to_str()).await;
+                match imported {
+                    Ok(_) => {
+                        reporter
+                            .send(Report {
+                                log: Some("DOWNLOAD FINISHED + IMPORTED".into()),
+                                report: None,
+                                level: LogLevel::INFO,
+                            })
+                            .ok();
+                    }
+                    Err(e) => report_err(&reporter, format!("import failed: {}", e)),
+                }
+            }
+            Err(e) => {
+                let _ = db::finish_download(&pool, id, "failed", None).await;
+                report_err(&reporter, format!("download failed: {}", e));
+            }
+        }
+    });
+}
+
+pub async fn handle_echo_download_key_event(
+    canvas: &mut EchoCanvas,
+    key_event: KeyEvent,
+) -> EchoResult<()> {
+    // url input mode
+    if canvas
+        .state
+        .echo_tab_state
+        .is_echo_download_buffer_being_filled
+    {
+        match key_event.code {
+            KeyCode::Char(c) => canvas.state.echo_tab_state.download_buffer.push(c),
+            KeyCode::Backspace => {
+                canvas.state.echo_tab_state.download_buffer.pop();
+            }
+            KeyCode::Enter => {
+                canvas
+                    .state
+                    .echo_tab_state
+                    .is_echo_download_buffer_being_filled = false;
+                queue_download(canvas).await;
+                canvas.state.echo_tab_state.download_buffer.clear();
+            }
+            KeyCode::Esc => {
+                canvas
+                    .state
+                    .echo_tab_state
+                    .is_echo_download_buffer_being_filled = false;
+                canvas.state.echo_tab_state.download_buffer.clear();
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    match key_event.code {
+        KeyCode::Char('i') => {
+            canvas
+                .state
+                .echo_tab_state
+                .is_echo_download_buffer_being_filled = true;
+        }
+        KeyCode::Char('w') => canvas.state.echo_tab_state.download_pane = 0,
+        KeyCode::Char('s') => canvas.state.echo_tab_state.download_pane = 1,
+        KeyCode::Char('n') => {
+            if canvas.state.echo_tab_state.download_pane == 1
+                && canvas.state.echo_tab_state.download_history_has_more
+            {
+                canvas.state.echo_tab_state.download_history_page += 1;
+                reload_download_history(canvas).await;
+            }
+        }
+        KeyCode::Char('b') => {
+            if canvas.state.echo_tab_state.download_pane == 1
+                && canvas.state.echo_tab_state.download_history_page > 0
+            {
+                canvas.state.echo_tab_state.download_history_page -= 1;
+                reload_download_history(canvas).await;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 pub async fn handle_echo_import_key_enent(
     canvas: &mut EchoCanvas,
     key_event: KeyEvent,
@@ -116,6 +284,7 @@ pub async fn handle_echo_import_key_enent(
                     canvas.state.local_songs = songs;
                     canvas.state.echo_tab_state.is_zero_local_song =
                         canvas.state.local_songs.is_empty();
+                    update_search_matches(canvas);
                 }
                 Err(e) => report_err(&reporter, format!("reload error: {}", e)),
             }
@@ -300,10 +469,104 @@ pub async fn handle_echo_import_key_enent(
     Ok(())
 }
 
+/// Filter by the active `SearchFilter`. Empty query = no filter.
+fn search_matches(
+    songs: &[crate::awdio::song::Song],
+    query: &str,
+    filter: crate::app::SearchFilter,
+) -> Vec<usize> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+
+    use crate::app::SearchFilter::*;
+    songs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            let m = &s.metadata;
+            match filter {
+                Title => m.title.to_lowercase().contains(&q),
+                Artist => m.artist.to_lowercase().contains(&q),
+                Album => m.album.to_lowercase().contains(&q),
+                Genre => m.genre.to_lowercase().contains(&q),
+                All => {
+                    m.title.to_lowercase().contains(&q)
+                        || m.artist.to_lowercase().contains(&q)
+                        || m.album.to_lowercase().contains(&q)
+                        || m.genre.to_lowercase().contains(&q)
+                }
+            }
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn update_search_matches(canvas: &mut EchoCanvas) {
+    let filter = canvas.state.echo_tab_state.search_filter;
+    let matched = search_matches(
+        &canvas.state.local_songs,
+        &canvas.state.echo_tab_state.search_buffer,
+        filter,
+    );
+    canvas.state.echo_tab_state.search_matched = matched;
+    canvas.state.selected_song_pos = canvas
+        .state
+        .selected_song_pos
+        .min(canvas.state.local_songs.len().saturating_sub(1));
+}
+
 pub fn handle_echo_search_key_event(
     canvas: &mut EchoCanvas,
     key_event: KeyEvent,
 ) -> EchoResult<()> {
+    use crate::app::SearchFilter;
+
+    // step 1: filter picker (i -> choose field -> type query)
+    if canvas.state.echo_tab_state.search_filter_selecting {
+        match key_event.code {
+            KeyCode::Char('w') => {
+                canvas.state.echo_tab_state.search_filter_pos = canvas
+                    .state
+                    .echo_tab_state
+                    .search_filter_pos
+                    .saturating_sub(1)
+            }
+            KeyCode::Char('s') => {
+                canvas.state.echo_tab_state.search_filter_pos =
+                    (canvas.state.echo_tab_state.search_filter_pos + 1)
+                        .min(SearchFilter::OPTIONS.len() - 1)
+            }
+            KeyCode::Enter => {
+                canvas.state.echo_tab_state.search_filter =
+                    SearchFilter::OPTIONS[canvas.state.echo_tab_state.search_filter_pos];
+                canvas.state.echo_tab_state.search_filter_selecting = false;
+                update_search_matches(canvas);
+            }
+            KeyCode::Char('t') | KeyCode::Char('a') | KeyCode::Char('l') | KeyCode::Char('g') => {
+                let f = match key_event.code {
+                    KeyCode::Char('t') => SearchFilter::Title,
+                    KeyCode::Char('a') => SearchFilter::Artist,
+                    KeyCode::Char('l') => SearchFilter::Album,
+                    _ => SearchFilter::Genre,
+                };
+                canvas.state.echo_tab_state.search_filter = f;
+                canvas.state.echo_tab_state.search_filter_pos = SearchFilter::OPTIONS
+                    .iter()
+                    .position(|o| *o == f)
+                    .unwrap_or(0);
+                canvas.state.echo_tab_state.search_filter_selecting = false;
+                update_search_matches(canvas);
+            }
+            KeyCode::Esc => {
+                canvas.state.echo_tab_state.search_filter_selecting = false;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     if canvas
         .state
         .echo_tab_state
@@ -312,17 +575,29 @@ pub fn handle_echo_search_key_event(
         match key_event.code {
             KeyCode::Char(c) => {
                 canvas.state.echo_tab_state.search_buffer.push(c);
-                return Ok(());
+                update_search_matches(canvas);
+            }
+            KeyCode::Backspace => {
+                canvas.state.echo_tab_state.search_buffer.pop();
+                update_search_matches(canvas);
             }
             KeyCode::Enter => {
                 canvas
                     .state
                     .echo_tab_state
                     .is_echo_search_buffer_being_filled = false;
-                return Ok(());
+            }
+            KeyCode::Esc => {
+                canvas
+                    .state
+                    .echo_tab_state
+                    .is_echo_search_buffer_being_filled = false;
+                canvas.state.echo_tab_state.search_buffer.clear();
+                update_search_matches(canvas);
             }
             _ => {}
         }
+        return Ok(());
     }
 
     // delete confirmation prompt
@@ -347,6 +622,7 @@ pub fn handle_echo_search_key_event(
                     .state
                     .selected_song_pos
                     .min(canvas.state.local_songs.len().saturating_sub(1));
+                update_search_matches(canvas);
 
                 let pool = canvas.db_connection_pool.clone();
                 let reporter = canvas.state.report_tx.clone();
@@ -374,6 +650,10 @@ pub fn handle_echo_search_key_event(
                 .state
                 .echo_tab_state
                 .is_echo_search_buffer_being_filled = false;
+            canvas.state.echo_tab_state.search_buffer.clear();
+            canvas.state.echo_tab_state.search_filter = crate::app::SearchFilter::All;
+            canvas.state.echo_tab_state.search_filter_pos = 0;
+            update_search_matches(canvas);
         }
         KeyCode::Char('d') => {
             if !canvas.state.local_songs.is_empty() {
@@ -381,16 +661,41 @@ pub fn handle_echo_search_key_event(
             }
         }
         KeyCode::Char('w') => {
-            if canvas.state.local_songs.len() == 0 {
+            let matched = &canvas.state.echo_tab_state.search_matched;
+            if canvas.state.local_songs.is_empty() {
                 return Ok(());
             }
-            canvas.state.previous_local_song()
+            if matched.is_empty() {
+                canvas.state.previous_local_song();
+            } else {
+                let cur = matched
+                    .iter()
+                    .position(|&i| i == canvas.state.selected_song_pos);
+                let new = match cur {
+                    Some(p) => matched[p.saturating_sub(1)],
+                    None => matched[0],
+                };
+                canvas.state.selected_song_pos = new;
+            }
         }
         KeyCode::Char('s') => {
-            if canvas.state.local_songs.len() == 0 {
+            let matched = &canvas.state.echo_tab_state.search_matched;
+            if canvas.state.local_songs.is_empty() {
                 return Ok(());
             }
-            canvas.state.next_local_song()
+            if matched.is_empty() {
+                canvas.state.next_local_song();
+            } else {
+                let cur = matched
+                    .iter()
+                    .position(|&i| i == canvas.state.selected_song_pos);
+                let new = match cur {
+                    Some(p) if p + 1 < matched.len() => matched[p + 1],
+                    Some(_) => matched[matched.len() - 1],
+                    None => matched[0],
+                };
+                canvas.state.selected_song_pos = new;
+            }
         }
         KeyCode::Enter => match canvas.state.local_songs.get(canvas.state.selected_song_pos) {
             Some(v) => {
@@ -441,49 +746,58 @@ pub async fn handle_echo_metadata_key_event(
                 let selected_song = &mut canvas.state.local_songs[canvas.state.selected_song_pos];
                 match canvas.state.echo_tab_state.echo_metadata_selected_pos {
                     0 => {
-                        selected_song.metadata.title = canvas.state.buffer.clone();
+                        selected_song.metadata.title =
+                            canvas.state.echo_tab_state.metadata_buffer.clone();
                     }
                     1 => {
-                        selected_song.metadata.artist = canvas.state.buffer.clone();
+                        selected_song.metadata.artist =
+                            canvas.state.echo_tab_state.metadata_buffer.clone();
                     }
                     2 => {
-                        selected_song.metadata.album = canvas.state.buffer.clone();
+                        selected_song.metadata.album =
+                            canvas.state.echo_tab_state.metadata_buffer.clone();
                     }
                     3 => {
                         selected_song.metadata.year = canvas
                             .state
-                            .buffer
+                            .echo_tab_state
+                            .metadata_buffer
                             .parse::<u32>()
                             .unwrap_or(selected_song.metadata.year);
                     }
                     4 => {
-                        selected_song.metadata.genre = canvas.state.buffer.clone();
+                        selected_song.metadata.genre =
+                            canvas.state.echo_tab_state.metadata_buffer.clone();
                     }
                     5 => {
                         selected_song.metadata.track_number = canvas
                             .state
-                            .buffer
+                            .echo_tab_state
+                            .metadata_buffer
                             .parse::<u32>()
                             .unwrap_or(selected_song.metadata.track_number);
                     }
                     6 => {
                         selected_song.metadata.total_tracks = canvas
                             .state
-                            .buffer
+                            .echo_tab_state
+                            .metadata_buffer
                             .parse::<u32>()
                             .unwrap_or(selected_song.metadata.total_tracks);
                     }
                     7 => {
                         selected_song.metadata.disc_number = canvas
                             .state
-                            .buffer
+                            .echo_tab_state
+                            .metadata_buffer
                             .parse::<u32>()
                             .unwrap_or(selected_song.metadata.disc_number);
                     }
                     8 => {
                         selected_song.metadata.total_discs = canvas
                             .state
-                            .buffer
+                            .echo_tab_state
+                            .metadata_buffer
                             .parse::<u32>()
                             .unwrap_or(selected_song.metadata.total_discs);
                     }
@@ -525,16 +839,16 @@ pub async fn handle_echo_metadata_key_event(
                     .state
                     .echo_tab_state
                     .is_echo_metadata_buffer_being_filled = false;
-                canvas.state.buffer = String::new();
+                canvas.state.echo_tab_state.metadata_buffer = String::new();
 
                 return Ok(());
             }
             KeyCode::Char(c) => {
-                canvas.state.buffer.push(c);
+                canvas.state.echo_tab_state.metadata_buffer.push(c);
                 return Ok(());
             }
             KeyCode::Backspace => {
-                canvas.state.buffer.pop();
+                canvas.state.echo_tab_state.metadata_buffer.pop();
                 return Ok(());
             }
             _ => return Ok(()),
@@ -562,16 +876,20 @@ pub async fn handle_echo_metadata_key_event(
             let metadata = &selected_song.metadata;
 
             match canvas.state.echo_tab_state.echo_metadata_selected_pos {
-                0 => canvas.state.buffer = metadata.title.clone(),
-                1 => canvas.state.buffer = metadata.artist.clone(),
-                2 => canvas.state.buffer = metadata.album.clone(),
-                3 => canvas.state.buffer = metadata.year.to_string(),
-                4 => canvas.state.buffer = metadata.genre.clone(),
-                5 => canvas.state.buffer = metadata.track_number.to_string(),
-                6 => canvas.state.buffer = metadata.total_tracks.to_string(),
-                7 => canvas.state.buffer = metadata.disc_number.to_string(),
-                8 => canvas.state.buffer = metadata.total_discs.to_string(),
-                _ => canvas.state.buffer = String::new(),
+                0 => canvas.state.echo_tab_state.metadata_buffer = metadata.title.clone(),
+                1 => canvas.state.echo_tab_state.metadata_buffer = metadata.artist.clone(),
+                2 => canvas.state.echo_tab_state.metadata_buffer = metadata.album.clone(),
+                3 => canvas.state.echo_tab_state.metadata_buffer = metadata.year.to_string(),
+                4 => canvas.state.echo_tab_state.metadata_buffer = metadata.genre.clone(),
+                5 => {
+                    canvas.state.echo_tab_state.metadata_buffer = metadata.track_number.to_string()
+                }
+                6 => {
+                    canvas.state.echo_tab_state.metadata_buffer = metadata.total_tracks.to_string()
+                }
+                7 => canvas.state.echo_tab_state.metadata_buffer = metadata.disc_number.to_string(),
+                8 => canvas.state.echo_tab_state.metadata_buffer = metadata.total_discs.to_string(),
+                _ => canvas.state.echo_tab_state.metadata_buffer = String::new(),
             }
         }
         _ => {}

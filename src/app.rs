@@ -48,7 +48,7 @@ pub struct AnimationState {
     pub is_blink: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum EchoSubTab {
     SEARCH,
     METADATA,
@@ -74,7 +74,7 @@ pub enum PlaylistSubTab {
     InputName,
 }
 
-#[derive(Default, Debug, Clone, Copy, Display, FromRepr, EnumIter)]
+#[derive(Default, Debug, Clone, Copy, Display, FromRepr, EnumIter, PartialEq)]
 pub enum SelectedTab {
     #[default]
     #[strum(to_string = "Echo")]
@@ -139,6 +139,46 @@ impl Default for Report {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SearchFilter {
+    All,
+    Title,
+    Artist,
+    Album,
+    Genre,
+}
+
+impl SearchFilter {
+    pub const OPTIONS: [SearchFilter; 5] = [
+        SearchFilter::All,
+        SearchFilter::Title,
+        SearchFilter::Artist,
+        SearchFilter::Album,
+        SearchFilter::Genre,
+    ];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SearchFilter::All => " ALL",
+            SearchFilter::Title => " TITLE",
+            SearchFilter::Artist => " ARTIST",
+            SearchFilter::Album => " ALBUM",
+            SearchFilter::Genre => " GENRE",
+        }
+    }
+}
+
+/// In-flight download, updated by the worker task via shared mutex.
+#[derive(Debug, Clone)]
+pub struct DownloadProgress {
+    pub id: i64,
+    pub url: String,
+    pub source: String,
+    pub percent: f32,
+    pub speed: String,
+    pub started_at: String,
+}
+
 #[derive(Debug)]
 pub struct EchoTabState {
     pub is_fft_enable: bool,
@@ -151,6 +191,10 @@ pub struct EchoTabState {
 
     pub is_echo_search_buffer_being_filled: bool,
     pub search_buffer: String,
+    pub search_matched: Vec<usize>,
+    pub search_filter: SearchFilter,
+    pub search_filter_selecting: bool,
+    pub search_filter_pos: usize,
     pub is_confirm_delete: bool,
 
     pub is_echo_import_buffer_being_filled: bool,
@@ -159,6 +203,14 @@ pub struct EchoTabState {
     pub import_file_selected_pos: usize,
     pub import_selected: Vec<bool>,
     pub is_confirm_import: bool,
+
+    pub is_echo_download_buffer_being_filled: bool,
+    pub download_buffer: String,
+    pub download_pane: usize, // 0 = progresses, 1 = history
+    pub download_progress: Arc<std::sync::Mutex<Vec<DownloadProgress>>>,
+    pub download_history: Vec<crate::db::DownloadRow>,
+    pub download_history_page: usize,
+    pub download_history_has_more: bool,
 
     pub is_zero_local_song: bool,
 }
@@ -172,12 +224,23 @@ impl EchoTabState {
             echo_metadata_selected_pos: 0,
             is_echo_metadata_buffer_being_filled: false,
             is_echo_search_buffer_being_filled: false,
+            search_matched: Vec::new(),
+            search_filter: SearchFilter::All,
+            search_filter_selecting: false,
+            search_filter_pos: 0,
             is_confirm_delete: false,
             is_echo_import_buffer_being_filled: false,
             import_file_list: Vec::new(),
             import_file_selected_pos: 0,
             import_selected: Vec::new(),
             is_confirm_import: false,
+            is_echo_download_buffer_being_filled: false,
+            download_buffer: "".into(),
+            download_pane: 0,
+            download_progress: Arc::new(std::sync::Mutex::new(Vec::new())),
+            download_history: Vec::new(),
+            download_history_page: 0,
+            download_history_has_more: false,
             is_zero_local_song: true,
             metadata_buffer: "".into(),
             search_buffer: "".into(),
@@ -189,6 +252,7 @@ impl EchoTabState {
 #[derive(Debug)]
 pub struct State {
     pub exit: bool,
+    pub is_confirm_exit: bool,
     pub selected_tab: SelectedTab,
     pub echo_tab_state: EchoTabState,
 
@@ -232,6 +296,7 @@ impl State {
     fn new(tx: Sender<Report>) -> Self {
         State {
             exit: false,
+            is_confirm_exit: false,
             selected_tab: SelectedTab::default(),
             echo_tab_state: EchoTabState::new(),
             buffer: "".into(),
@@ -342,9 +407,7 @@ pub async fn start(data: (UiConfig, SqlitePool, Paths)) -> EchoResult<()> {
     );
 
     let local_songs = Repository::get_songs_from_db(&data.1, 0, 10).await?;
-    if local_songs.len() == 0 {
-        state.echo_tab_state.is_zero_local_song = true;
-    }
+    state.echo_tab_state.is_zero_local_song = local_songs.is_empty();
     state.local_songs = local_songs;
 
     // Load playlists from DB

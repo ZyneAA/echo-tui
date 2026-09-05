@@ -3,25 +3,33 @@ use tokio::fs;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::{
-    app::EchoSubTab, awdio::metadata::Metadata, event::echo::sub_events, result::EchoResult,
+    app::{EchoSubTab, SelectedTab},
+    awdio::metadata::Metadata,
+    event::echo::sub_events,
+    result::EchoResult,
     ui::EchoCanvas,
 };
 
 pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent) -> EchoResult<()> {
-    // later
-    // if canvas
-    //     .state
-    //     .echo_tab_state
-    //     .is_echo_metadata_buffer_being_filled
-    // {
-    //     return canvas.handle_echo_metadata_key_event(key_event).await;
-    // }
+    if canvas
+        .state
+        .echo_tab_state
+        .is_echo_metadata_buffer_being_filled
+    {
+        return sub_events::handle_echo_metadata_key_event(canvas, key_event).await;
+    }
     if canvas
         .state
         .echo_tab_state
         .is_echo_search_buffer_being_filled
     {
         return sub_events::handle_echo_search_key_event(canvas, key_event);
+    } else if canvas
+        .state
+        .echo_tab_state
+        .is_echo_download_buffer_being_filled
+    {
+        return sub_events::handle_echo_download_key_event(canvas, key_event).await;
     } else if canvas
         .state
         .echo_tab_state
@@ -38,6 +46,7 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
         (KeyCode::Char('D'), _) | (KeyCode::Char('d'), KeyModifiers::SHIFT) => {
             canvas.state.echo_tab_state.prev_sub_state = EchoSubTab::DOWNLOAD;
             canvas.state.switch_echo_subtab('D');
+            sub_events::reload_download_history(canvas).await;
         }
         (KeyCode::Char('S'), _) | (KeyCode::Char('s'), KeyModifiers::SHIFT) => {
             canvas.state.echo_tab_state.prev_sub_state = EchoSubTab::SEARCH;
@@ -137,8 +146,15 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
         }
 
         (KeyCode::Char('f'), _) => {
-            let mut ok = canvas.audio_player.state.lock().unwrap();
-            ok.enable_fft_compute = !ok.enable_fft_compute;
+            // in Echo>Search, f opens the filter picker instead of FFT toggle
+            if canvas.state.selected_tab == SelectedTab::Echo
+                && canvas.state.echo_tab_state.echo_subtab == EchoSubTab::SEARCH
+            {
+                canvas.state.echo_tab_state.search_filter_selecting = true;
+            } else {
+                let mut ok = canvas.audio_player.state.lock().unwrap();
+                ok.enable_fft_compute = !ok.enable_fft_compute;
+            }
         }
         (KeyCode::Char('P') | KeyCode::Char('p'), _) => canvas.toggle_pause()?,
         (KeyCode::Char('K') | KeyCode::Char('k'), _) => canvas.adjust_volume(0.1)?,
@@ -148,11 +164,11 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
 
         (KeyCode::Char('i'), _) => match canvas.state.echo_tab_state.echo_subtab {
             EchoSubTab::SEARCH => {
+                // i -> straight into query input (filter defaults to ALL)
                 canvas
                     .state
                     .echo_tab_state
                     .is_echo_search_buffer_being_filled = true;
-
                 return Ok(());
             }
             EchoSubTab::IMPORT => {
@@ -165,12 +181,18 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
             }
 
             EchoSubTab::METADATA => {
+                canvas.state.echo_tab_state.metadata_buffer.clear();
                 canvas
                     .state
                     .echo_tab_state
                     .is_echo_metadata_buffer_being_filled = true
             }
-            _ => {}
+            EchoSubTab::DOWNLOAD => {
+                canvas
+                    .state
+                    .echo_tab_state
+                    .is_echo_download_buffer_being_filled = true
+            }
         },
 
         _ => match canvas.state.echo_tab_state.echo_subtab {
@@ -183,7 +205,9 @@ pub async fn handle_echo_key_event(canvas: &mut EchoCanvas, key_event: KeyEvent)
             EchoSubTab::METADATA => {
                 return sub_events::handle_echo_metadata_key_event(canvas, key_event).await;
             }
-            _ => {}
+            EchoSubTab::DOWNLOAD => {
+                return sub_events::handle_echo_download_key_event(canvas, key_event).await;
+            }
         },
     }
 

@@ -1,7 +1,9 @@
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
-    widgets::Widget,
+    style::{Modifier, Style},
+    text::Line,
+    widgets::{Paragraph, Widget},
 };
 
 use crate::ui::components;
@@ -44,5 +46,23 @@ impl Widget for &EchoCanvas {
             &self.audio_state,
             &self.all_paths,
         );
+
+        if self.state.is_confirm_exit {
+            let prompt = Paragraph::new(
+                Line::from(" EXIT? (y/n) ").style(
+                    Style::default()
+                        .add_modifier(Modifier::REVERSED)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            )
+            .centered();
+            let area = Rect {
+                x: body_area.x,
+                y: body_area.bottom().saturating_sub(1),
+                width: body_area.width,
+                height: 1,
+            };
+            prompt.render(area, buf);
+        }
     }
 }
